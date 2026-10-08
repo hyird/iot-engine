@@ -66,7 +66,7 @@ enum class ProtocolActionKind {
 };
 
 // 协议能力描述不持有连接、任务或其他可变运行状态。
-enum class CommandLayout { WritableElements, CompleteFunction };
+enum class CommandLayout { WritableElements, CompleteFunction, WritableMessage };
 enum class CommandTransport { Raw, DeviceConfigured };
 enum class ResponseTracking { EverySend, CommandsOnly };
 enum class PacketAttribution { Connection, ParsedFrame };

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { Modbus } from './protocol.types';
+import type { Modbus, MqttConfig, MqttPoint, MqttTemplateDraft } from './protocol.types';
 export const protocolIdSchema = z.uuid({ error: 'id 必须是 UUID' });
 export const protocolTypeSchema = z.enum(['SL651', 'Modbus', 'S7', 'MC', 'FINS', 'DLT645', 'MQTT']);
 
@@ -32,6 +32,148 @@ const mqttPathSchema = z
             !value.startsWith('/') || (!/~(?![01])/.test(value) && value.split('/').length <= 33),
         'JSON Pointer 转义无效或超过 32 层'
     );
+
+type MqttJson = null | boolean | number | string | MqttJson[] | { [key: string]: MqttJson };
+const mqttPointer = (parts: readonly string[]) =>
+    `/${parts.map((part) => part.replace(/~/g, '~0').replace(/\//g, '~1')).join('/')}`;
+const mqttTemplateError = (template: string, path: string, message: string): never => {
+    throw new Error(`${template}${path || '（根对象）'}: ${message}`);
+};
+
+function parseMqttTemplate(text: string, template: string): { [key: string]: MqttJson } {
+    if (new TextEncoder().encode(text).length > 16384)
+        mqttTemplateError(template, '', '模板不能超过 16384 UTF-8 字节');
+    let value: MqttJson;
+    try {
+        value = JSON.parse(text) as MqttJson;
+    } catch {
+        return mqttTemplateError(template, '', '模板须为有效 JSON');
+    }
+    if (!value || typeof value !== 'object' || Array.isArray(value))
+        return mqttTemplateError(template, '', '模板根节点须为 JSON 对象');
+
+    // JSON.parse discards duplicate keys. Scan the validated source before any mappings can be lost.
+    let position = 0;
+    const space = () => {
+        while (/\s/.test(text[position] ?? '') && position < text.length) position++;
+    };
+    const string = () => {
+        const start = position++;
+        while (text[position] !== '"') {
+            if (text[position] === '\\') position++;
+            position++;
+        }
+        position++;
+        return JSON.parse(text.slice(start, position)) as string;
+    };
+    const scan = (parts: string[]) => {
+        if (parts.length > 32)
+            mqttTemplateError(template, mqttPointer(parts), '模板不能超过 32 层');
+        space();
+        if (text[position] === '{') {
+            position++;
+            space();
+            const keys = new Set<string>();
+            while (text[position] !== '}') {
+                const key = string();
+                const path = [...parts, key];
+                if (keys.has(key))
+                    mqttTemplateError(template, mqttPointer(path), 'JSON 对象键不能重复');
+                keys.add(key);
+                space();
+                position++;
+                scan(path);
+                space();
+                if (text[position] !== ',') break;
+                position++;
+                space();
+            }
+            position++;
+        } else if (text[position] === '[') {
+            position++;
+            space();
+            let index = 0;
+            while (text[position] !== ']') {
+                scan([...parts, String(index++)]);
+                space();
+                if (text[position] !== ',') break;
+                position++;
+            }
+            position++;
+        } else if (text[position] === '"') {
+            string();
+        } else {
+            while (position < text.length && !/[\s,}\]]/.test(text[position])) position++;
+        }
+    };
+    scan([]);
+    return value;
+}
+
+function visitMqttTemplate(
+    value: MqttJson,
+    visit: (value: string, path: string) => void,
+    parts: string[] = []
+): void {
+    if (typeof value === 'string') visit(value, mqttPointer(parts));
+    else if (value && typeof value === 'object')
+        Object.entries(value).forEach(([key, child]) => {
+            visitMqttTemplate(child, visit, [...parts, key]);
+        });
+}
+
+function mqttPointPlaceholder(value: string, template: string, path: string): string | undefined {
+    if (!value.startsWith('$point:')) return undefined;
+    const name = value.slice('$point:'.length);
+    if (!name || name !== name.trim() || name.length > 100)
+        mqttTemplateError(template, path, '点位占位符名称须为 1–100 个字符且不能有首尾空格');
+    return name;
+}
+
+function mqttReportMappings(text: string) {
+    const value = parseMqttTemplate(text, 'reportTemplate');
+    const points = new Map<string, string>();
+    let deviceCodeField: string | undefined;
+    let timeField: string | undefined;
+    visitMqttTemplate(value, (marker, path) => {
+        const name = mqttPointPlaceholder(marker, 'reportTemplate', path);
+        if (name !== undefined) {
+            if (points.has(name))
+                mqttTemplateError('reportTemplate', path, `点位占位符重复：${name}`);
+            points.set(name, path);
+        } else if (marker === '$deviceCode') {
+            if (deviceCodeField)
+                mqttTemplateError('reportTemplate', path, '$deviceCode 只能出现一次');
+            deviceCodeField = path;
+        } else if (marker === '$time') {
+            if (timeField) mqttTemplateError('reportTemplate', path, '$time 只能出现一次');
+            timeField = path;
+        } else if (marker.startsWith('$')) {
+            mqttTemplateError('reportTemplate', path, `未知占位符：${marker}`);
+        }
+    });
+    if (!points.size) mqttTemplateError('reportTemplate', '', '至少需要一个 $point:<名称> 占位符');
+    return { points, deviceCodeField, timeField };
+}
+
+function mqttCommandReferences(text: string, names: ReadonlySet<string>, legacyValues = false) {
+    const value = parseMqttTemplate(text, 'commandTemplate');
+    const references = new Set<string>();
+    visitMqttTemplate(value, (marker, path) => {
+        const name = mqttPointPlaceholder(marker, 'commandTemplate', path);
+        if (name !== undefined) {
+            if (!names.has(name)) mqttTemplateError('commandTemplate', path, `未知点位：${name}`);
+            references.add(name);
+        } else if (
+            marker.startsWith('$') &&
+            marker !== '$deviceCode' &&
+            !(legacyValues && marker === '$values')
+        ) {
+            mqttTemplateError('commandTemplate', path, `未知占位符：${marker}`);
+        }
+    });
+    return references;
+}
 export const mqttConfigSchema = z
     .object({
         storagePolicy: z.enum(['report', 'change']),
@@ -48,6 +190,7 @@ export const mqttConfigSchema = z
         timeFormat: z.enum(['unix_ms', 'unix_s', 'iso8601']).optional(),
         commandTopic: z.union([z.literal(''), mqttCommandTopicSchema]).optional(),
         commandTemplate: z.string().max(16384).optional(),
+        reportTemplate: z.string().max(16384).optional(),
         qos: z.union([z.literal(0), z.literal(1), z.literal(2)]),
         points: z
             .array(
@@ -112,14 +255,31 @@ export const mqttConfigSchema = z
         if (config.timeField) selector(config.timeField, ['timeField']);
         const ids = new Set<string>();
         const fields = new Set<string>();
+        let namedTemplate = config.reportTemplate !== undefined;
+        if (config.reportTemplate !== undefined) {
+            if (format !== 'json') issue(['reportTemplate'], '上报模板仅用于 JSON');
+            try {
+                mqttReportMappings(config.reportTemplate);
+            } catch (error) {
+                issue(['reportTemplate'], (error as Error).message);
+            }
+        }
         if (config.commandTemplate) {
             if (format !== 'json') issue(['commandTemplate'], '指令模板仅用于 JSON');
             try {
-                JSON.parse(config.commandTemplate);
-            } catch {
-                issue(['commandTemplate'], '指令模板须为有效 JSON');
+                const references = mqttCommandReferences(
+                    config.commandTemplate,
+                    new Set(config.points.map((point) => point.name)),
+                    true
+                );
+                namedTemplate ||= references.size > 0;
+                if (references.size && !config.commandTopic)
+                    issue(['commandTopic'], '点位指令模板需要指令 Topic');
+            } catch (error) {
+                issue(['commandTemplate'], (error as Error).message);
             }
         }
+        const names = new Set<string>();
         config.points.forEach((point, index) => {
             const inputs = new Set<string>(),
                 outputs = new Set<string>();
@@ -145,6 +305,9 @@ export const mqttConfigSchema = z
                 if (output !== undefined) outputs.add(output);
             });
             selector(point.field, ['points', index, 'field']);
+            if (namedTemplate && names.has(point.name))
+                issue(['points', index, 'name'], '使用名称占位符时点位名称必须唯一');
+            names.add(point.name);
             if (point.writable && point.scale === 0)
                 issue(['points', index, 'scale'], '可写点位倍率不能为零');
             if (
@@ -167,6 +330,200 @@ export const mqttConfigSchema = z
             fields.add(point.field);
         });
     });
+
+function mqttCanonicalField(field: string): string {
+    if (!field.startsWith('/')) return mqttPointer([field]);
+    if (/~(?![01])/.test(field) || field.split('/').length > 33)
+        throw new Error(`字段路径无效：${field}`);
+    return field;
+}
+
+export function compileMqttTemplate(draft: MqttTemplateDraft): MqttConfig {
+    const report = mqttReportMappings(draft.reportTemplate);
+    const levels = draft.topic.split('/');
+    const markers = levels.filter((level) => level === '{deviceCode}').length;
+    if (
+        markers > 1 ||
+        levels.some((level) => level.includes('{deviceCode}') && level !== '{deviceCode}')
+    )
+        throw new Error('topic: {deviceCode} 须独占一层且只能出现一次');
+    if (/[+#]/.test(draft.topic) && !report.deviceCodeField && !markers)
+        throw new Error(
+            'topic: 通配 Topic 须在上报模板中包含 $deviceCode，或将设备对应的 + 改为 {deviceCode}'
+        );
+    const commandTopic = draft.commandTopic?.trim() ? draft.commandTopic : undefined;
+    const commandTemplate = draft.commandTemplate?.trim() ? draft.commandTemplate : undefined;
+    if (!!commandTopic !== !!commandTemplate)
+        throw new Error('commandTopic/commandTemplate: 指令 Topic 和指令模板须同时填写或同时清空');
+    const references = commandTemplate
+        ? mqttCommandReferences(commandTemplate, new Set(report.points.keys()))
+        : new Set<string>();
+    if (commandTopic) {
+        const commandMarkers = commandTopic.split('/').filter((level) => level === '{deviceCode}');
+        if (
+            commandMarkers.length > 1 ||
+            commandTopic
+                .split('/')
+                .some((level) => level.includes('{deviceCode}') && level !== '{deviceCode}')
+        )
+            throw new Error('commandTopic: {deviceCode} 须独占一层且只能出现一次');
+    }
+    const byName = new Map<string, MqttPoint>();
+    const byField = new Map<string, MqttPoint>();
+    draft.points.forEach((point, index) => {
+        if (byName.has(point.name))
+            throw new Error(`points/${index}/name: 点位名称必须唯一：${point.name}`);
+        const field = mqttCanonicalField(point.field);
+        if (byField.has(field))
+            throw new Error(`points/${index}/field: 点位字段必须唯一：${point.field}`);
+        byName.set(point.name, point);
+        byField.set(field, point);
+    });
+    // Reserve name matches first so a moved point cannot steal another point's identity.
+    const used = new Set<MqttPoint>();
+    const retained = new Map<string, MqttPoint>();
+    report.points.forEach((_field, name) => {
+        const point = byName.get(name);
+        if (point) {
+            retained.set(name, point);
+            used.add(point);
+        }
+    });
+    const points = Array.from(report.points, ([name, field]) => {
+        let point = retained.get(name);
+        if (!point) {
+            const previous = byField.get(field);
+            if (previous && !used.has(previous)) {
+                point = previous;
+                used.add(previous);
+            }
+        }
+        return {
+            ...point,
+            id: point?.id || crypto.randomUUID(),
+            name,
+            field,
+            dataType: point?.dataType ?? 'DOUBLE',
+            writable: references.has(name),
+        } satisfies MqttPoint;
+    });
+    const result = mqttConfigSchema.safeParse({
+        topic: draft.topic,
+        storagePolicy: draft.storagePolicy,
+        qos: draft.qos,
+        payloadFormat: 'json',
+        identitySource: markers ? 'bound' : report.deviceCodeField ? 'payload' : 'bound',
+        topicDeviceSegment: 0,
+        recordsPath: '',
+        deviceCodeField: report.deviceCodeField ?? '',
+        timeField: report.timeField ?? '',
+        ...(draft.timeFormat ? { timeFormat: draft.timeFormat } : {}),
+        commandTopic: commandTopic ?? '',
+        commandTemplate: commandTemplate ?? '',
+        reportTemplate: draft.reportTemplate,
+        points,
+    });
+    if (!result.success) {
+        const issue = result.error.issues[0];
+        throw new Error(`${issue.path.join('/') || 'config'}: ${issue.message}`);
+    }
+    return result.data;
+}
+
+export function mqttTemplateDraft(config: MqttConfig): MqttTemplateDraft {
+    const unsupported = (reason: string): never => {
+        throw new Error(
+            `此 MQTT 配置无法使用 JSON 模板编辑：${reason}；请通过原配置/API 保留并处理，不能自动丢弃映射`
+        );
+    };
+    if ((config.payloadFormat ?? 'json') !== 'json') unsupported('文本和二进制格式不受支持');
+    if (config.recordsPath) unsupported('recordsPath 批量记录路径不受单记录模板支持');
+    let topic = config.topic;
+    const identity = config.identitySource ?? (config.deviceCodeField ? 'payload' : 'bound');
+    if (identity === 'topic') {
+        const levels = topic.split('/');
+        const segment = config.topicDeviceSegment ?? 1;
+        if (levels[segment] !== '+' || config.deviceCodeField)
+            unsupported('Topic 设备层不是明确的 +，或同时配置了负载设备字段');
+        levels[segment] = '{deviceCode}';
+        topic = levels.join('/');
+    }
+    let reportTemplate = config.reportTemplate;
+    if (reportTemplate === undefined) {
+        const root: { [key: string]: MqttJson } = Object.create(null);
+        const insert = (field: string, marker: string) => {
+            const path = mqttCanonicalField(field);
+            const parts = path
+                .slice(1)
+                .split('/')
+                .map((part) => part.replace(/~1/g, '/').replace(/~0/g, '~'));
+            if (parts.some((part) => /^(0|[1-9]\d*)$/.test(part)))
+                unsupported(`字段 ${field} 无法区分数组下标与数字对象键`);
+            let object = root;
+            parts.forEach((part, index) => {
+                if (index === parts.length - 1) {
+                    if (Object.hasOwn(object, part)) unsupported(`字段 ${field} 与其他字段重叠`);
+                    object[part] = marker;
+                } else {
+                    if (!Object.hasOwn(object, part)) object[part] = Object.create(null);
+                    const child = object[part];
+                    if (!child || typeof child !== 'object' || Array.isArray(child))
+                        unsupported(`字段 ${field} 与其他字段重叠`);
+                    object = child as { [key: string]: MqttJson };
+                }
+            });
+        };
+        if (config.deviceCodeField) insert(config.deviceCodeField, '$deviceCode');
+        if (config.timeField) insert(config.timeField, '$time');
+        config.points.forEach((point) => {
+            insert(point.field, `$point:${point.name}`);
+        });
+        reportTemplate = JSON.stringify(root, null, 2);
+    }
+    const draft: MqttTemplateDraft = {
+        topic,
+        reportTemplate,
+        qos: config.qos,
+        storagePolicy: config.storagePolicy,
+        ...(config.timeFormat ? { timeFormat: config.timeFormat } : {}),
+        ...(config.commandTopic ? { commandTopic: config.commandTopic } : {}),
+        ...(config.commandTemplate ? { commandTemplate: config.commandTemplate } : {}),
+        points: config.points.map((point) => ({
+            ...point,
+            ...(point.enumValues
+                ? { enumValues: point.enumValues.map((value) => ({ ...value })) }
+                : {}),
+        })),
+    };
+    let compiled: MqttConfig;
+    try {
+        compiled = compileMqttTemplate(draft);
+    } catch (error) {
+        return unsupported((error as Error).message);
+    }
+    const expectedIdentity = identity === 'topic' ? 'bound' : identity;
+    if (
+        compiled.identitySource !== expectedIdentity ||
+        compiled.deviceCodeField !==
+            (config.deviceCodeField ? mqttCanonicalField(config.deviceCodeField) : '') ||
+        compiled.timeField !== (config.timeField ? mqttCanonicalField(config.timeField) : '')
+    )
+        unsupported('上报模板与现有设备标识或时间字段不一致');
+    if (
+        compiled.points.length !== config.points.length ||
+        config.points.some((point) => {
+            const next = compiled.points.find((item) => item.id === point.id);
+            return (
+                !next ||
+                next.name !== point.name ||
+                next.field !== mqttCanonicalField(point.field) ||
+                !!next.writable !== !!point.writable
+            );
+        })
+    )
+        unsupported('模板与现有点位映射或可写状态不一致');
+    return draft;
+}
 
 // 与服务端 Expression 使用相同语法和复杂度上限；仅解析，不执行用户输入。
 export function validatePointExpression(text: string, aliases: readonly string[]): void {

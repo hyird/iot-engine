@@ -175,20 +175,52 @@ class Session final : public ProtocolSession, public CommandCapabilitySession, p
             subscription.recordDelimiter = stringOption(config.get<"recordDelimiter">(), "\n");
             subscription.timeField = stringOption(config.get<"timeField">(), "");
             subscription.timeFormat = stringOption(config.get<"timeFormat">(), "unix_ms");
-            subscription.commandTemplate = stringOption(config.get<"commandTemplate">(), "");
             subscription.topicSegment = static_cast<std::size_t>(config.get<"topicDeviceSegment">().value_or(ruvia::Int64{ 1 }).value);
             subscription.recordLength = static_cast<std::size_t>(config.get<"recordLength">().value_or(ruvia::Int64{ 0 }).value);
             if (const auto& topic = config.get<"commandTopic">(); topic && !topic->view().empty()) {
                 subscription.commandTopic = deviceTopic(std::string(topic->view()), device->code);
             }
+            std::map<std::string, bool, std::less<>> templatePoints;
             for (const auto& point : config.get<"points">()) {
                 const auto& unit = point.get<"unit">();
+                if (!templatePoints.emplace(std::string(point.get<"name">().view()), point.get<"writable">().value_or(ruvia::Bool{ false }).value).second) {
+                    throw std::invalid_argument("MQTT 点位名称重复");
+                }
                 subscription.points.push_back({ std::string(point.get<"id">().view()), std::string(point.get<"name">().view()), std::string(point.get<"field">().view()), std::string(point.get<"dataType">().view()), unit ? std::string(unit->view()) : "", point.get<"scale">().value_or(ruvia::Double{ 1 }).value, point.get<"offset">().value_or(ruvia::Double{ 0 }).value });
                 if (const auto& values = point.get<"enumValues">(); values) {
                     for (const auto& value : *values) {
                         subscription.points.back().enums.emplace_back(value.get<"input">().view(), value.get<"output">().view());
                     }
                 }
+            }
+            const auto compileTemplate = [&](std::string_view input, bool report = false) {
+                service::utils::JsonValueTemplate::Tokens allowed{ "$deviceCode", report ? "$time" : "$values" }, sparse;
+                for (const auto& [name, writable] : templatePoints) {
+                    const auto token = "$point:" + name;
+                    allowed.insert(token);
+                    sparse.insert(token);
+                }
+                service::utils::JsonValueTemplate result(input, allowed, sparse, report);
+                bool hasPoint = false;
+                for (const auto& [name, writable] : templatePoints) {
+                    if (!result.references("$point:" + name)) continue;
+                    hasPoint = true;
+                    if (!report && !writable) throw std::invalid_argument("指令模板引用不可写点位: " + name);
+                }
+                if (report && !hasPoint) throw std::invalid_argument("上报模板至少需要一个点位占位符");
+                return result;
+            };
+            if (const auto& value = config.get<"commandTemplate">(); value && !value->view().empty()) {
+                if (subscription.format != "json") throw std::invalid_argument("指令模板仅用于 JSON");
+                subscription.commandTemplate = compileTemplate(value->view());
+                for (auto& point : subscription.points) {
+                    auto token = "$point:" + point.name;
+                    if (subscription.commandTemplate->references(token)) point.commandToken = std::move(token);
+                }
+            }
+            if (const auto& value = config.get<"reportTemplate">(); value) {
+                if (subscription.format != "json") throw std::invalid_argument("上报模板仅用于 JSON");
+                (void)compileTemplate(value->view(), true);
             }
             for (const auto& previous : subscriptions_) {
                 if (previous.topic == subscription.topic && previous.recordsPath == subscription.recordsPath &&
@@ -331,6 +363,8 @@ class Session final : public ProtocolSession, public CommandCapabilitySession, p
         try {
             const auto elements = command::resolve(*subscription->device, request.elements);
             PayloadObject payloadObject;
+            service::utils::JsonValueTemplate::Values namedValues;
+            const bool fieldPayload = !subscription->commandTemplate || subscription->commandTemplate->references("$values");
             std::map<std::size_t, std::string> columns;
             std::string payload;
             std::vector<bool> occupied;
@@ -384,15 +418,25 @@ class Session final : public ProtocolSession, public CommandCapabilitySession, p
                         throw std::invalid_argument("指令值没有对应的枚举原值");
                     }
                 }
-                assign(point.mqttField, *value);
+                const auto& token = mapping->commandToken;
+                if (subscription->commandTemplate && !subscription->commandTemplate->references("$values") && !subscription->commandTemplate->references(token)) {
+                    throw std::invalid_argument("请求点位未出现在指令模板中: " + mapping->name);
+                }
+                if (subscription->commandTemplate && subscription->commandTemplate->references(token)) {
+                    namedValues.emplace(token, service::utils::payloadScalarJson(*value));
+                }
+                if (fieldPayload) assign(point.mqttField, *value);
             }
-            if (subscription->identitySource == "payload") {
+            if (fieldPayload && subscription->identitySource == "payload") {
                 assign(subscription->deviceCodeField, service::utils::PayloadScalar{ subscription->device->code });
             }
             if (subscription->format == "json") {
-                payload = payloadObject.json(true);
-                if (!subscription->commandTemplate.empty()) {
-                    payload = service::utils::expandJsonTemplate(subscription->commandTemplate, { { "$values", payload }, { "$deviceCode", service::utils::jsonQuoted(subscription->device->code) } });
+                if (subscription->commandTemplate) {
+                    if (subscription->commandTemplate->references("$values")) namedValues.emplace("$values", payloadObject.json(true));
+                    if (subscription->commandTemplate->references("$deviceCode")) namedValues.emplace("$deviceCode", service::utils::jsonQuoted(subscription->device->code));
+                    payload = subscription->commandTemplate->render(namedValues);
+                } else {
+                    payload = payloadObject.json(true);
                 }
             } else if (subscription->format == "text" && !columns.empty()) {
                 if (columns.rbegin()->first > 4096) {
@@ -522,6 +566,7 @@ class Session final : public ProtocolSession, public CommandCapabilitySession, p
         std::string id, name, field, type, unit;
         double scale = 1, offset = 0;
         std::vector<std::pair<std::string, std::string>> enums;
+        std::string commandToken;
     };
 
     struct Subscription {
@@ -529,7 +574,8 @@ class Session final : public ProtocolSession, public CommandCapabilitySession, p
         std::string topic, commandTopic, deviceCodeField, recordsPath;
         std::uint8_t qos;
         std::vector<Mapping> points;
-        std::string identitySource, format, delimiter, recordDelimiter, timeField, timeFormat, commandTemplate;
+        std::string identitySource, format, delimiter, recordDelimiter, timeField, timeFormat;
+        std::optional<service::utils::JsonValueTemplate> commandTemplate;
         std::size_t topicSegment = 1, recordLength = 0;
     };
 

@@ -146,6 +146,15 @@ export function summarizeDeviceCommandResult(result: Device.CommandStatusesResul
                   : failed.reason || '设备执行指令失败';
         return { failed: true, message };
     }
+    if (
+        result.statuses.length > 0 &&
+        result.statuses.every((status) => status.reason === 'mqtt_broker_acknowledged')
+    ) {
+        return {
+            failed: false,
+            message: '控制消息已送达 Broker；设备执行结果需等待设备回执',
+        };
+    }
     const actualValues = result.statuses.flatMap((status) => status.actual_values ?? []);
     return {
         failed: false,

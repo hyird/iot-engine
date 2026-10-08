@@ -1826,7 +1826,12 @@ return result
                         ruvia::DbDataType::kJsonb) } },
             emptyArray(s7)
         );
-        s7.select({ s7.column(service::device::entities::DeviceEntity::columnName<"id">(), "d"), s7.binary(s7.column("protocol", "p"), ruvia::DbBinaryOperator::kConcat, s7.value("_WRITE")), DeviceAccessService::text(s7, "写寄存器"), s7Element, DeviceAccessService::integer(s7, 2), s7.column("element_position", "elements"), s7.column("preset", "presets"), s7.column("preset_position", "presets") })
+        const auto commandName = s7.caseWhen(
+            { { s7.binary(s7.column("protocol", "p"), ruvia::DbBinaryOperator::kEqual, s7.value("MQTT")),
+                s7.value("发送控制消息") } },
+            s7.value("写寄存器")
+        );
+        s7.select({ s7.column(service::device::entities::DeviceEntity::columnName<"id">(), "d"), s7.binary(s7.column("protocol", "p"), ruvia::DbBinaryOperator::kConcat, s7.value("_WRITE")), commandName, s7Element, DeviceAccessService::integer(s7, 2), s7.column("element_position", "elements"), s7.column("preset", "presets"), s7.column("preset_position", "presets") })
             .from(service::device::entities::DeviceEntity::tableName(), "d")
             .join(ruvia::DbJoinType::kInner, service::device::entities::DeviceModelEntity::tableName(), andAll(s7, s7.binary(s7.column(service::device::entities::DeviceModelEntity::columnName<"device_id">(), "p"), ruvia::DbBinaryOperator::kEqual, s7.column(service::device::entities::DeviceEntity::columnName<"id">(), "d")), s7.binary(s7.column(service::device::entities::DeviceModelEntity::columnName<"protocol">(), "p"), ruvia::DbBinaryOperator::kIn, s7.list({ s7.value("S7"), s7.value("MC"), s7.value("FINS"), s7.value("DLT645"), s7.value("MQTT") }))), "p")
             .joinFunction(

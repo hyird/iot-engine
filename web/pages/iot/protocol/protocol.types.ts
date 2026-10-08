@@ -31,7 +31,18 @@ export interface MqttConfig {
     timeFormat?: 'unix_ms' | 'unix_s' | 'iso8601';
     commandTopic?: string;
     commandTemplate?: string;
+    reportTemplate?: string;
     qos: 0 | 1 | 2;
+    points: MqttPoint[];
+}
+export interface MqttTemplateDraft {
+    topic: string;
+    reportTemplate: string;
+    commandTopic?: string;
+    commandTemplate?: string;
+    qos: 0 | 1 | 2;
+    storagePolicy: 'report' | 'change';
+    timeFormat?: 'unix_ms' | 'unix_s' | 'iso8601';
     points: MqttPoint[];
 }
 export interface MqttPreviewRequest {

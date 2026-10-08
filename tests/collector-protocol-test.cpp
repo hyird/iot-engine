@@ -1007,6 +1007,10 @@ void testProtocolCommandGrouping() {
     const auto tasks = collector::command::groupElements(collector::protocolDefinition("SL651"), values);
     require(tasks.size() == 1 && tasks[0].size() == 2 && tasks[0][1].elementId == "second",
         "complete function command was split into incomplete requests");
+    const auto mqttTasks = collector::command::groupElements(collector::kMqttProtocol, values);
+    require(mqttTasks.size() == 1 && mqttTasks.front().size() == 2 &&
+        mqttTasks.front()[0].elementId == "first" && mqttTasks.front()[1].value == "2",
+        "MQTT message template was split into partial payloads");
     require(collector::command::groupElements(collector::kSl651Protocol, {}).empty(),
         "empty command created an empty task");
 }

@@ -41,6 +41,10 @@ struct Fixture {
         return session->consume({ .messageId = id, .connectionId = "connection", .receivedAtMs = 1000, .bytes = bytes });
     }
 
+    std::vector<ProtocolAction> execute(ProtocolCommand command) {
+        return dynamic_cast<CommandCapabilitySession*>(session.get())->execute(std::move(command));
+    }
+
     void start() {
         const auto connect = session->connected();
         require(connect.front().bytes == mqtt::Bytes({ 0x10, 25, 0, 4, 'M', 'Q', 'T', 'T', 4, 2, 0, 60, 0, 13, 'p', 'l', 'a', 't', 'f', 'o', 'r', 'm', '-', 't', 'e', 's', 't' }), "CONNECT golden frame mismatch");
@@ -168,6 +172,91 @@ void testTextAndBinaryCommands() {
                 "text/binary command bytes or inverse scale incorrect");
     }
 }
+
+std::string publishedPayload(const std::vector<ProtocolAction>& actions) {
+    if (actions.empty() || actions.front().kind != ProtocolActionKind::Send) {
+        throw std::runtime_error("command did not publish: " + (actions.empty() ? std::string("no actions") : actions.front().reason));
+    }
+    const auto& bytes = actions.front().bytes;
+    require((bytes.front() >> 4) == 3, "command frame is not PUBLISH");
+    std::size_t offset = 1;
+    while (bytes.at(offset++) & 128) {}
+    const auto topicLength = (bytes.at(offset) << 8) | bytes.at(offset + 1);
+    offset += 2 + topicLength;
+    if ((bytes.front() >> 1) & 3) offset += 2;
+    return std::string(bytes.begin() + static_cast<std::ptrdiff_t>(offset), bytes.end());
+}
+
+void configureNamed(Fixture& fixture, std::string_view commandTemplate, std::string_view temperatureOptions = R"(,"scale":2,"offset":1)") {
+    auto& device = fixture.snapshot->devices.front();
+    device.code = "device\"\\code";
+    device.calculationConfig = R"({"topic":"devices/0","commandTopic":"commands/0","qos":2,"identitySource":"payload","deviceCodeField":"/report/code","commandTemplate":)" +
+        service::utils::jsonQuoted(commandTemplate) +
+        R"(,"points":[{"id":"temperature","name":"温度","field":"/report/temperature","dataType":"DOUBLE","writable":true)" + std::string(temperatureOptions) +
+        R"(},{"id":"enabled","name":"开关","field":"/report/enabled","dataType":"BOOL","writable":true},{"id":"label","name":"名称","field":"/report/label","dataType":"STRING","writable":true},{"id":"mode","name":"模式","field":"/report/mode","dataType":"BOOL","writable":true,"enumValues":[{"input":"ON","output":"true"},{"input":"OFF","output":"false"}]},{"id":"other","name":"其他","field":"/report/other","dataType":"DOUBLE","writable":true}]})";
+    device.elements = {
+        { .id = "temperature", .name = "温度", .dataType = "DOUBLE", .mqttField = "/report/temperature", .writable = true },
+        { .id = "enabled", .name = "开关", .dataType = "BOOL", .mqttField = "/report/enabled", .writable = true },
+        { .id = "label", .name = "名称", .dataType = "STRING", .mqttField = "/report/label", .size = 256, .writable = true },
+        { .id = "mode", .name = "模式", .dataType = "BOOL", .mqttField = "/report/mode", .writable = true },
+        { .id = "other", .name = "其他", .dataType = "DOUBLE", .mqttField = "/report/other", .writable = true }
+    };
+    fixture.session = mqtt::Factory{}.createSession(fixture.snapshot->links.front(), "connection", "broker", fixture.snapshot);
+}
+
+void requireCommandFailure(const std::vector<ProtocolAction>& actions) {
+    require(actions.size() == 1 && actions.front().kind == ProtocolActionKind::FailCommand && actions.front().bytes.empty(), "failed command sent an MQTT frame");
+}
+
+void testNamedTemplates() {
+    constexpr std::string_view templateJson = R"({"device":"$deviceCode","set":{"temperature":"$point:温度","enabled":"$point:开关","label":"$point:名称","mode":"$point:模式"},"again":"$point:温度","constant":[7,false,null,"prefix $point:温度"],"$deviceCode":"literal"})";
+    Fixture fixture;
+    configureNamed(fixture, templateJson);
+    fixture.start();
+    const auto report = fixture.receive(publication("devices/0", R"({"report":{"code":"device\"\\code","temperature":7,"enabled":true,"label":"x","mode":"ON","other":1}})", 0));
+    require(report.front().kind == ProtocolActionKind::PublishParsed && report.front().parsed.valuesJson.find("15") != std::string::npos, "named command changed canonical report mapping");
+    const std::string label = "quote\" slash\\ line\nnext";
+    const auto command = fixture.execute({ .id = "named", .deviceId = "0", .elements = { { "temperature", "15" }, { "enabled", "1" }, { "label", label }, { "mode", "1" } } });
+    const auto payload = publishedPayload(command);
+    const auto expected = R"({"device":"device\"\\code","set":{"temperature":7,"enabled":true,"label":)" + service::utils::jsonQuoted(label) + R"(,"mode":"ON"},"again":7,"constant":[7,false,null,"prefix $point:温度"],"$deviceCode":"literal"})";
+    require(payload == expected, "named template typed values, inverse transforms, escaping or constants incorrect");
+    require(payload.find("\"report\"") == std::string::npos && payload.find("\"other\"") == std::string::npos, "report paths leaked into command");
+    const auto partial = publishedPayload(fixture.execute({ .id = "partial", .deviceId = "0", .elements = { { "enabled", "0" } } }));
+    require(partial == R"({"device":"device\"\\code","set":{"enabled":false},"constant":[7,false,null,"prefix $point:温度"],"$deviceCode":"literal"})", "partial command filled absent fields or unresolved placeholders");
+    requireCommandFailure(fixture.execute({ .id = "unrepresented", .deviceId = "0", .elements = { { "other", "1" } } }));
+    requireCommandFailure(fixture.execute({ .id = "invalid-value", .deviceId = "0", .elements = { { "enabled", "invalid" } } }));
+    fixture.snapshot->devices.front().elements[1].writable = false;
+    requireCommandFailure(fixture.execute({ .id = "permission", .deviceId = "0", .elements = { { "enabled", "1" } } }));
+
+    Fixture array;
+    configureNamed(array, R"({"set":["$point:温度","$point:开关"]})");
+    array.start();
+    requireCommandFailure(array.execute({ .id = "missing-slot", .deviceId = "0", .elements = { { "temperature", "15" } } }));
+    require(publishedPayload(array.execute({ .id = "all-slots", .deviceId = "0", .elements = { { "temperature", "15" }, { "enabled", "0" } } })) == R"({"set":[7,false]})", "fixed array template shifted slots");
+
+    Fixture zero;
+    configureNamed(zero, R"({"set":"$point:温度"})", R"(,"scale":0)");
+    zero.start();
+    requireCommandFailure(zero.execute({ .id = "zero-scale", .deviceId = "0", .elements = { { "temperature", "15" } } }));
+    Fixture legacy;
+    configureNamed(legacy, R"({"device":"$deviceCode","body":"$values"})");
+    legacy.start();
+    const auto legacyPayloadText = publishedPayload(legacy.execute({ .id = "legacy", .deviceId = "0", .elements = { { "temperature", "15" } } }));
+    const auto legacyPayload = ruvia::JsonValue::parse(legacyPayloadText);
+    const auto legacyTemperature = legacyPayload ? service::utils::jsonField(*legacyPayload, "/body/report/temperature") : std::nullopt;
+    require(legacyTemperature && legacyTemperature->view() == "7", "legacy $values API behavior regressed");
+
+    for (const auto invalid : { R"({"x":"$unknown"})", R"({"x":"$time"})", R"({"x":"$point:不存在"})", R"({"x":1,"x":"$point:温度"})", R"(["$point:温度"])" }) {
+        bool rejected = false;
+        try {
+            Fixture bad;
+            configureNamed(bad, invalid);
+        } catch (const std::invalid_argument&) {
+            rejected = true;
+        }
+        require(rejected, "invalid named template accepted by runtime");
+    }
+}
 } // namespace
 
 int main() {
@@ -177,6 +266,7 @@ int main() {
         testFailuresAndKeepAlive();
         testBatchPathsAndRetries();
         testTextAndBinaryCommands();
+        testNamedTemplates();
         std::cout << "MQTT tests passed\n";
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

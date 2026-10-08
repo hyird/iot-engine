@@ -77,12 +77,66 @@ void testRejectedConfiguration() {
     }
     require(rejected, "wildcard sample topic accepted as a concrete publication topic");
 }
+
+void testTemplates() {
+    const auto withTemplate = [](std::string_view value, bool writable = true) {
+        return configuration("\"commandTopic\":\"commands\",\"commandTemplate\":" + service::utils::jsonQuoted(value) + ",", writable ? R"(,"writable":true)" : "");
+    };
+    const auto valid = withTemplate(R"({"device":"$deviceCode","set":{"target":"$point:温度"},"again":"$point:温度","constant":false,"$point:温度":"key remains literal"})");
+    const auto namedResult = preview(valid, "devices", R"({"temperature":8})", "D001");
+    require(namedResult.get<"records">()[0].get<"points">()[0].get<"value">().view() == "8", "named template altered report value");
+    const auto legacyResult = preview(withTemplate(R"({"values":"$values"})"), "devices", R"({"temperature":8})", "D001");
+    require(legacyResult.get<"records">()[0].get<"points">()[0].get<"value">().view() == "8", "legacy values template altered report value");
+
+    const std::string report = " {\"code\":\"$deviceCode\",\"temperature\":\"$point:温度\",\"at\":\"$time\",\"constant\":42} ";
+    const auto metadata = configuration("\"reportTemplate\":" + service::utils::jsonQuoted(report) + ",", "");
+    const auto typed = ruvia::fromJson<service::protocol::MqttConfig>(metadata);
+    require(typed && typed->get<"reportTemplate">() && typed->get<"reportTemplate">()->view() == report, "report template metadata was dropped or normalized");
+    const auto serializedText = ruvia::toJson(*typed);
+    const auto serialized = ruvia::JsonValue::parse(serializedText);
+    const auto storedReport = serialized ? serialized->get<ruvia::String>("reportTemplate") : std::nullopt;
+    require(storedReport && storedReport->view() == report, "preview serialization lost report template");
+    const auto metadataResult = preview(metadata, "devices", R"({"temperature":8})", "D001");
+    require(metadataResult.get<"records">()[0].get<"points">()[0].get<"value">().view() == "8", "report metadata altered canonical preview");
+
+    std::string deep = "\"$point:温度\"";
+    for (int i = 0; i < 33; ++i) deep = "{\"nested\":" + deep + "}";
+    std::vector<std::string> invalid{
+        withTemplate(R"({"target":"$point:不存在"})"),
+        withTemplate(R"({"target":"$unknown"})"),
+        withTemplate(R"({"target":"$time"})"),
+        withTemplate(R"({"target":"$point:"})"),
+        withTemplate(R"({"target":"$point:温度"})", false),
+        withTemplate(R"({"target":1,"target":"$point:温度"})"),
+        withTemplate(R"(["$point:温度"])"),
+        withTemplate(deep),
+        withTemplate("{\"constant\":" + service::utils::jsonQuoted(std::string(16384, 'x')) + "}"),
+        configuration("\"reportTemplate\":" + service::utils::jsonQuoted(R"({"a":"$point:温度","b":"$point:温度"})") + ",", ""),
+        configuration("\"reportTemplate\":" + service::utils::jsonQuoted(R"({"a":"$values"})") + ",", ""),
+        configuration("\"reportTemplate\":" + service::utils::jsonQuoted(R"({"a":"$point:不存在"})") + ",", ""),
+        configuration("\"reportTemplate\":" + service::utils::jsonQuoted(R"({"a":"$point:温度","b":"$deviceCode","c":"$deviceCode"})") + ",", ""),
+        configuration("\"reportTemplate\":" + service::utils::jsonQuoted(R"({"a":"$point:温度","b":"$time","c":"$time"})") + ",", ""),
+        configuration("\"reportTemplate\":" + service::utils::jsonQuoted(deep) + ",", ""),
+        configuration("\"reportTemplate\":" + service::utils::jsonQuoted("{}") + ",", ""),
+        configuration("\"reportTemplate\":" + service::utils::jsonQuoted("[]") + ",", "")
+    };
+    auto duplicateName = configuration("", "");
+    duplicateName.replace(duplicateName.size() - 2, 1, ",{\"id\":\"00000000-0000-7000-8000-000000000002\",\"name\":\"温度\",\"field\":\"other\",\"dataType\":\"DOUBLE\"}]");
+    invalid.push_back(std::move(duplicateName));
+    for (const auto& config : invalid) {
+        bool rejected = false;
+        try { (void)preview(config, "devices", R"({"temperature":8})", "D001"); }
+        catch (const std::exception&) { rejected = true; }
+        require(rejected, "invalid template accepted by module");
+    }
+}
 } // namespace
 
 int main() {
     try {
         testFormatsAndTime();
         testRejectedConfiguration();
+        testTemplates();
         std::cout << "MQTT configuration tests passed\n";
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

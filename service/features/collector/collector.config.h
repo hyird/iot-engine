@@ -54,7 +54,7 @@ inline constexpr ProtocolDefinition kDlt645Protocol{
 inline constexpr ProtocolDefinition kMqttProtocol{
     "MQTT", ProtocolCapability::TcpClient | ProtocolCapability::Heartbeat |
         ProtocolCapability::Commands | ProtocolCapability::UnsolicitedReports,
-    CommandLayout::WritableElements, CommandTransport::Raw,
+    CommandLayout::WritableMessage, CommandTransport::Raw,
     ResponseTracking::CommandsOnly, PacketAttribution::ParsedFrame};
 
 inline constexpr std::array kProtocolDefinitions{kModbusProtocol, kS7Protocol, kSl651Protocol,

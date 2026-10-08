@@ -9,6 +9,7 @@ const now = Math.floor(Date.now() / 1000);
 const unsigned = `${encode({ alg: 'HS256', typ: 'JWT' })}.${encode({ iss: 'iot-engine', aud: 'iot-engine-web', sub: admin, user_id: admin, username: 'admin', token_type: 'access', iat: now, exp: now + 3600 })}`;
 const token = `${unsigned}.${createHmac('sha256', 'architecture-test-only-access-secret-000000000').update(unsigned).digest('base64url')}`;
 const point = crypto.randomUUID(),
+    enabledPoint = crypto.randomUUID(),
     target = crypto.randomUUID();
 const name = `mqtt-${crypto.randomUUID()}`;
 let link = '',
@@ -103,9 +104,11 @@ const broker = Bun.listen<{ buffer: Buffer; subscribed: boolean }>({
                         topic = body.subarray(2, 2 + size).toString();
                     assert.equal(topic, 'factory/commands');
                     const payload = JSON.parse(body.subarray(4 + size).toString());
-                    assert.equal(payload.cmd, 'set');
-                    assert.equal(payload.values.code, 'D001');
-                    assert.equal(payload.values.metrics.temperature, 150);
+                    assert.deepEqual(payload, {
+                        cmd: 'set',
+                        device: 'D001',
+                        control: { targetTemperature: 150, enabled: false },
+                    });
                     ++commands;
                     socket.write(Buffer.from([0x40, 2, body[2 + size], body[3 + size]]));
                 } else throw Error(`unexpected MQTT packet ${header}`);
@@ -159,7 +162,7 @@ try {
         timeField: '/time',
         timeFormat: 'unix_ms',
         commandTopic: 'factory/commands',
-        commandTemplate: '{"cmd":"set","values":"$values"}',
+        commandTemplate: '{"cmd":"set","device":"$deviceCode","control":{"targetTemperature":"$point:温度","enabled":"$point:开关"}}',
         qos: 1,
         points: [
             {
@@ -169,6 +172,13 @@ try {
                 dataType: 'DOUBLE',
                 unit: '℃',
                 scale: 0.1,
+                writable: true,
+            },
+            {
+                id: enabledPoint,
+                name: '开关',
+                field: '/metrics/enabled',
+                dataType: 'BOOL',
                 writable: true,
             },
         ],
@@ -248,8 +258,9 @@ try {
     await until(async () => acknowledgements > 0, 'Broker did not receive PUBACK');
     const command = await ok('POST', `/v1/device/${devices[0]}/commands`, {
         idempotency_key: crypto.randomUUID(),
-        elements: [{ elementId: point, value: '15' }],
+        elements: [{ elementId: point, value: '15' }, { elementId: enabledPoint, value: '0' }],
     });
+    assert.equal(command.command_ids.length, 1, 'one MQTT message must have one acknowledgement');
     await until(async () => commands === 1, 'MQTT command was not sent');
     await until(
         async () =>

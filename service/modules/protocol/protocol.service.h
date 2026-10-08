@@ -531,11 +531,6 @@ class ProtocolConfigurationRules final {
             const auto format = typed->get<"payloadFormat">() ? typed->get<"payloadFormat">()->view() : std::string_view("json");
             const auto identity = typed->get<"identitySource">() ? typed->get<"identitySource">()->view() : (codeField && !codeField->view().empty() ? std::string_view("payload") : std::string_view("bound"));
             if (!oneOf(format, {"json", "text", "binary"}) || !oneOf(identity, {"bound", "payload", "topic"})) service::common::fail(16004, "MQTT 负载格式或设备识别方式无效", 400);
-            if (const auto& commandTemplate = typed->get<"commandTemplate">(); commandTemplate && !commandTemplate->view().empty()) {
-                if (format != "json" || commandTemplate->view().size() > 16384) service::common::fail(16004, "指令模板仅用于 JSON，最多 16384 字节", 400);
-                try { (void)service::utils::expandJsonTemplate(commandTemplate->view(), {{"$values", "{}"}, {"$deviceCode", "\"D001\""}}); }
-                catch (const std::invalid_argument& error) { service::common::fail(16004, error.what(), 400); }
-            }
             if (identity == "payload" && (!codeField || codeField->view().empty())) service::common::fail(16004, "负载识别需要设备标识字段", 400);
             if (identity == "bound" && topic && topic->view().find_first_of("+#") != std::string_view::npos) service::common::fail(16004, "通配 Topic 需要从 Topic 或负载识别设备", 400);
             const auto segment = typed->get<"topicDeviceSegment">().value_or(ruvia::Int64{1}).value;
@@ -567,6 +562,7 @@ class ProtocolConfigurationRules final {
             const auto& points = typed->get<"points">();
             if ((required && !points) || (points && points->size() > 256)) service::common::fail(16004, "MQTT 点位配置无效", 400);
             std::set<std::string> ids, fields;
+            std::map<std::string, bool, std::less<>> templatePoints;
             if (points) for (const auto& point : *points) {
                 const auto name = point.get<"name">().view(), field = point.get<"field">().view();
                 if (!service::common::isUuidField(point.get<"id">()) || !ids.emplace(point.get<"id">().view()).second ||
@@ -574,6 +570,8 @@ class ProtocolConfigurationRules final {
                     !fields.emplace(field).second || (codeField && codeField->view() == field) ||
                     !oneOf(point.get<"dataType">().view(), {"BOOL", "STRING", "DOUBLE"}))
                     service::common::fail(16004, "MQTT 点位名称、标识、JSON 字段或类型无效", 400);
+                if (!templatePoints.emplace(std::string(name), point.get<"writable">().value_or(ruvia::Bool{false}).value).second)
+                    service::common::fail(16004, "MQTT 点位名称重复", 400);
                 try { validateSelector(field); }
                 catch (const std::invalid_argument& error) { service::common::fail(16004, error.what(), 400); }
                 const auto scale = point.get<"scale">().value_or(ruvia::Double{1}).value, offset = point.get<"offset">().value_or(ruvia::Double{0}).value;
@@ -592,6 +590,32 @@ class ProtocolConfigurationRules final {
                 if (required && point.get<"writable">().value_or(ruvia::Bool{false}).value &&
                     (!commandTopic || commandTopic->view().empty())) service::common::fail(16004, "可写 MQTT 点位需要指令 Topic", 400);
             }
+            try {
+                const auto validateTemplate = [&](std::string_view input, bool report = false) {
+                    service::utils::JsonValueTemplate::Tokens allowed{ "$deviceCode", report ? "$time" : "$values" }, sparse;
+                    for (const auto& [name, writable] : templatePoints) {
+                        const auto token = "$point:" + name;
+                        allowed.insert(token);
+                        sparse.insert(token);
+                    }
+                    const service::utils::JsonValueTemplate parsed(input, allowed, sparse, report);
+                    bool hasPoint = false;
+                    for (const auto& [name, writable] : templatePoints) {
+                        if (!parsed.references("$point:" + name)) continue;
+                        hasPoint = true;
+                        if (!report && !writable) throw std::invalid_argument("指令模板引用不可写点位: " + name);
+                    }
+                    if (report && !hasPoint) throw std::invalid_argument("上报模板至少需要一个点位占位符");
+                };
+                if (const auto& value = typed->get<"commandTemplate">(); value && !value->view().empty()) {
+                    if (format != "json") throw std::invalid_argument("指令模板仅用于 JSON");
+                    validateTemplate(value->view());
+                }
+                if (const auto& value = typed->get<"reportTemplate">(); value) {
+                    if (format != "json") throw std::invalid_argument("上报模板仅用于 JSON");
+                    validateTemplate(value->view(), true);
+                }
+            } catch (const std::invalid_argument& error) { service::common::fail(16004, error.what(), 400); }
             return;
         }
         if (protocol == "SL651") {

@@ -125,6 +125,7 @@ RUVIA_MODEL(MqttConfig,
     RUVIA_OPTIONAL_FIELD(recordLength, ruvia::Int64),
     RUVIA_OPTIONAL_FIELD(timeField, ruvia::String),
     RUVIA_OPTIONAL_FIELD(timeFormat, ruvia::String),
+    RUVIA_OPTIONAL_FIELD(reportTemplate, ruvia::String),
     RUVIA_OPTIONAL_FIELD(commandTopic, ruvia::String), RUVIA_OPTIONAL_FIELD(commandTemplate, ruvia::String),
     RUVIA_OPTIONAL_FIELD(qos, ruvia::Int64),
     RUVIA_OPTIONAL_FIELD(points, ruvia::Array<MqttPoint>));

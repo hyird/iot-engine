@@ -17,6 +17,7 @@ import {
     Button,
     Card,
     Col,
+    Collapse,
     Divider,
     Empty,
     Flex,
@@ -32,6 +33,7 @@ import {
     Space,
     Switch,
     Table,
+    Tabs,
     Tag,
     Tooltip,
     Tree,
@@ -56,10 +58,11 @@ import { PageContainer } from '@/components/PageContainer';
 import { usePermissions } from '@/hooks/usePermission';
 import {
     checkAddressConflict,
+    compileMqttTemplate,
     derivedPointSchema,
     formatTsapValue,
     industrialConfigSchema,
-    mqttConfigSchema,
+    mqttTemplateDraft,
     parseProtocolImport,
     validatePointExpression,
     validateTsapValue,
@@ -119,6 +122,8 @@ import type {
     ModbusDictConfig,
     MqttConfig,
     MqttPoint,
+    MqttPreviewResult,
+    MqttTemplateDraft,
     Protocol,
     RegisterModalRef,
     S7,
@@ -6441,12 +6446,33 @@ export const McConfigPage = () => <IndustrialConfigPage protocol="MC" />;
 export const FinsConfigPage = () => <IndustrialConfigPage protocol="FINS" />;
 export const Dlt645ConfigPage = () => <IndustrialConfigPage protocol="DLT645" />;
 
+const MQTT_REPORT_EXAMPLE = JSON.stringify(
+    {
+        deviceId: '$deviceCode',
+        timestamp: '$time',
+        data: { temperature: '$point:温度', humidity: '$point:湿度', online: '$point:在线' },
+    },
+    null,
+    2
+);
+const MQTT_COMMAND_EXAMPLE = JSON.stringify(
+    { action: 'set', deviceId: '$deviceCode', data: { temperature: '$point:温度' } },
+    null,
+    2
+);
+const MQTT_POINT_TYPES = [
+    { value: 'DOUBLE', label: '数值' },
+    { value: 'BOOL', label: '布尔' },
+    { value: 'STRING', label: '文本' },
+];
+const EMPTY_MQTT_POINTS: MqttPoint[] = [];
+
 export function MqttConfigPage() {
     const { has } = usePermissions();
     const { message } = App.useApp();
     const canQuery = has('iot:protocol:query');
     const canEdit = has('iot:protocol:edit');
-    const { data, isLoading, error } = useProtocolConfigList(
+    const { data, isLoading, error, refetch } = useProtocolConfigList(
         { protocol: 'MQTT' },
         { enabled: canQuery }
     );
@@ -6455,28 +6481,32 @@ export function MqttConfigPage() {
     const [selected, setSelected] = useState<string>();
     const [editing, setEditing] = useState<Protocol.Item>();
     const [open, setOpen] = useState(false);
-    const [form] = Form.useForm<{ name: string; enabled: boolean; config: MqttConfig }>();
-    const payloadFormat = Form.useWatch(['config', 'payloadFormat'], form) ?? 'json';
-    const codeField = Form.useWatch(['config', 'deviceCodeField'], form);
-    const identitySource =
-        Form.useWatch(['config', 'identitySource'], form) ?? (codeField ? 'payload' : 'bound');
+    const [tab, setTab] = useState('template');
+    const [expandedPoints, setExpandedPoints] = useState<string[]>([]);
+    const [form] = Form.useForm<MqttTemplateDraft & { name: string; enabled: boolean }>();
+    const points: MqttPoint[] =
+        Form.useWatch('points', { form, preserve: true }) ?? EMPTY_MQTT_POINTS;
+    const [formError, setFormError] = useState('');
+    const [mappingDirty, setMappingDirty] = useState(false);
     const [sampleTopic, setSampleTopic] = useState('devices/D001/telemetry');
     const [sampleCode, setSampleCode] = useState('D001');
     const [sampleTimezone, setSampleTimezone] = useState('+08:00');
-    const [samplePayload, setSamplePayload] = useState('{"temperature":25.6}');
+    const [samplePayload, setSamplePayload] = useState(
+        '{"deviceId":"D001","timestamp":1790740800123,"data":{"temperature":25.6,"humidity":60,"online":true}}'
+    );
     const [preview, setPreview] = useState<{
-        records: (Awaited<ReturnType<typeof previewMqttPayload>>['records'][number] & {
-            key: string;
-        })[];
+        records: (MqttPreviewResult['records'][number] & { key: string })[];
     }>();
     const [previewError, setPreviewError] = useState('');
     const [previewBusy, setPreviewBusy] = useState(false);
     const previewSequence = useRef(0);
     const active = data?.find((item) => item.id === selected) ?? data?.[0];
     const config = active?.config as MqttConfig | undefined;
-    const activeIdentity =
-        config?.identitySource ?? (config?.deviceCodeField ? 'payload' : 'bound');
     const viewport = useRef<HTMLDivElement>(null);
+    const editor = useRef<HTMLDivElement>(null);
+    useEffect(() => {
+        if (formError) editor.current?.parentElement?.scrollTo({ top: 0 });
+    }, [formError]);
     const [bodyHeight, setBodyHeight] = useState(240);
     useEffect(() => {
         if (!active?.id) return;
@@ -6488,65 +6518,92 @@ export function MqttConfigPage() {
         observer.observe(element);
         return () => observer.disconnect();
     }, [active?.id]);
-    const edit = (item?: Protocol.Item) => {
+    const invalidatePreview = () => {
         ++previewSequence.current;
         setPreview(undefined);
         setPreviewError('');
         setPreviewBusy(false);
-        setEditing(item);
-        form.resetFields();
-        form.setFieldsValue(
-            item
-                ? {
-                      name: item.name,
-                      enabled: item.enabled,
-                      config: {
-                          payloadFormat: 'json',
-                          delimiter: ',',
-                          recordDelimiter: '\n',
-                          timeFormat: 'unix_ms',
-                          identitySource: (item.config as MqttConfig).deviceCodeField
-                              ? 'payload'
-                              : 'bound',
-                          ...item.config,
-                      } as MqttConfig,
-                  }
-                : {
-                      name: '',
-                      enabled: true,
-                      config: {
-                          storagePolicy: 'report',
-                          topic: 'devices/{deviceCode}/telemetry',
-                          deviceCodeField: '',
-                          commandTopic: '',
-                          qos: 1,
-                          payloadFormat: 'json',
-                          identitySource: 'bound',
-                          topicDeviceSegment: 1,
-                          delimiter: ',',
-                          recordDelimiter: '\n',
-                          timeFormat: 'unix_ms',
-                          points: [],
-                      },
-                  }
-        );
-        setOpen(true);
     };
-    const submit = async () => {
-        const values = await form.validateFields();
-        const checked = mqttConfigSchema.safeParse(values.config);
-        if (!checked.success) {
-            message.error(checked.error.issues[0]?.message ?? '配置无效');
+    const edit = (item?: Protocol.Item, initialTab = 'template', pointId?: string) => {
+        let draft: MqttTemplateDraft;
+        try {
+            draft = item
+                ? mqttTemplateDraft(item.config as MqttConfig)
+                : {
+                      topic: 'devices/{deviceCode}/telemetry',
+                      reportTemplate: MQTT_REPORT_EXAMPLE,
+                      commandTopic: '',
+                      commandTemplate: '',
+                      storagePolicy: 'report',
+                      timeFormat: 'unix_ms',
+                      qos: 1,
+                      points: [],
+                  };
+            draft.points = compileMqttTemplate(draft).points;
+        } catch (error) {
+            message.error(error instanceof Error ? error.message : '无法读取消息模板');
             return;
         }
-        await save.mutateAsync({
-            id: editing?.id,
-            protocol: 'MQTT',
-            name: values.name,
-            enabled: values.enabled,
-            config: { ...editing?.config, ...checked.data },
-        });
+        invalidatePreview();
+        setFormError('');
+        setMappingDirty(false);
+        setEditing(item);
+        setTab(initialTab);
+        setExpandedPoints(pointId ? [pointId] : []);
+        form.resetFields();
+        form.setFieldsValue({ ...draft, name: item?.name ?? '', enabled: item?.enabled ?? true });
+        setOpen(true);
+    };
+    const compile = () => {
+        const compiled = compileMqttTemplate(form.getFieldsValue(true));
+        form.setFieldValue('points', compiled.points);
+        setMappingDirty(false);
+        setFormError('');
+        return compiled;
+    };
+    const generatePoints = () => {
+        try {
+            compile();
+            setTab('points');
+        } catch (error) {
+            setFormError(error instanceof Error ? error.message : '模板无效');
+        }
+    };
+    const close = () => {
+        invalidatePreview();
         setOpen(false);
+    };
+    const submit = async () => {
+        try {
+            await form.validateFields();
+        } catch {
+            setFormError('请检查配置名称和点位属性。');
+            return;
+        }
+        let compiled: MqttConfig;
+        try {
+            compiled = compile();
+        } catch (error) {
+            setFormError(error instanceof Error ? error.message : '模板无效');
+            return;
+        }
+        const values = form.getFieldsValue(true);
+        try {
+            await save.mutateAsync({
+                id: editing?.id,
+                protocol: 'MQTT',
+                name: values.name,
+                enabled: values.enabled,
+                config: compiled,
+            });
+            close();
+            const refreshed = await refetch();
+            setSelected(
+                editing?.id ?? refreshed.data?.find((item) => item.name === values.name)?.id
+            );
+        } catch {
+            // 保存错误由统一 mutation 提示，保留当前编辑内容。
+        }
     };
     const parseSample = async () => {
         const sequence = ++previewSequence.current;
@@ -6554,9 +6611,8 @@ export function MqttConfigPage() {
         setPreview(undefined);
         setPreviewError('');
         try {
-            const config = mqttConfigSchema.parse(form.getFieldValue('config'));
             const result = await previewMqttPayload({
-                config,
+                config: compile(),
                 topic: sampleTopic,
                 payload: samplePayload,
                 deviceCode: sampleCode,
@@ -6574,441 +6630,720 @@ export function MqttConfigPage() {
         }
     };
     const columns: ColumnsType<MqttPoint> = [
-        { title: '名称', dataIndex: 'name', width: 180 },
-        { title: '字段映射', dataIndex: 'field', width: 180 },
-        { title: '类型', dataIndex: 'dataType', width: 120 },
-        { title: '单位', dataIndex: 'unit', width: 100 },
+        { title: '名称', dataIndex: 'name', width: 160 },
+        { title: '点位标识', dataIndex: 'id', width: 170, ellipsis: true },
+        { title: '消息路径', dataIndex: 'field', width: 200, ellipsis: true },
         {
-            title: '可写',
+            title: '数据类型',
+            dataIndex: 'dataType',
+            width: 100,
+            render: (value) =>
+                MQTT_POINT_TYPES.find((item) => item.value === value)?.label ?? value,
+        },
+        { title: '单位', dataIndex: 'unit', width: 80 },
+        {
+            title: '读写',
             dataIndex: 'writable',
-            width: 90,
-            render: (value) => (value ? '是' : '否'),
+            width: 80,
+            render: (value) => (value ? '可写' : '只读'),
+        },
+        {
+            title: '操作',
+            width: 100,
+            fixed: 'right',
+            render: (_, point) =>
+                canEdit && (
+                    <Button
+                        type="link"
+                        size="small"
+                        onClick={() => edit(active, 'points', point.id)}
+                    >
+                        编辑
+                    </Button>
+                ),
         },
     ];
-    if (!canQuery) return <Result status="403" title="无权查看 MQTT 配置" />;
+    if (!canQuery || error)
+        return (
+            <PageContainer title="MQTT 配置">
+                <Result
+                    status={canQuery ? 'error' : '403'}
+                    title={canQuery ? '配置加载失败' : '无权查看 MQTT 配置'}
+                />
+            </PageContainer>
+        );
     return (
-        <PageContainer
-            header={
-                <Space>
-                    <span>MQTT 3.1.1 配置</span>
-                    {has('iot:protocol:add') && (
-                        <Button type="primary" onClick={() => edit()}>
-                            新增配置
-                        </Button>
-                    )}
-                </Space>
-            }
-        >
-            {error ? (
-                <Alert type="error" message="配置加载失败" />
-            ) : (
-                <div className="flex h-full min-h-0 flex-col gap-4 md:flex-row">
-                    <div className="shrink-0 overflow-auto rounded-lg border border-gray-200 p-3 md:w-56">
-                        <Tree
-                            selectedKeys={active ? [active.id] : []}
-                            treeData={(data ?? []).map((item) => ({
-                                key: item.id,
-                                title: item.name,
-                            }))}
-                            onSelect={(keys) => setSelected(keys[0]?.toString())}
-                        />
-                    </div>
-                    <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3">
+        <PageContainer title="MQTT 配置">
+            <div className="flex h-full min-h-0 flex-col gap-3 overflow-hidden lg:flex-row lg:gap-0">
+                <div className="h-48 min-h-0 shrink-0 lg:h-full lg:w-[360px] lg:pr-3">
+                    <Card
+                        className="flex h-full min-h-0 flex-col overflow-hidden"
+                        styles={{ body: { flex: 1, minHeight: 0, overflow: 'auto', padding: 16 } }}
+                        title={
+                            <Flex
+                                justify="space-between"
+                                align="center"
+                                gap={8}
+                                wrap
+                                className="py-2"
+                            >
+                                <span>设备类型</span>
+                                <Space size={4}>
+                                    {has('iot:protocol:add') && (
+                                        <Button size="small" type="primary" onClick={() => edit()}>
+                                            新增
+                                        </Button>
+                                    )}
+                                    {canEdit && (
+                                        <Button
+                                            size="small"
+                                            disabled={!active}
+                                            onClick={() => edit(active)}
+                                        >
+                                            编辑
+                                        </Button>
+                                    )}
+                                    {has('iot:protocol:delete') && (
+                                        <Popconfirm
+                                            title="确认删除该设备类型？"
+                                            disabled={!active}
+                                            onConfirm={() =>
+                                                active && remove.mutateAsync(active.id)
+                                            }
+                                        >
+                                            <Button
+                                                size="small"
+                                                danger
+                                                disabled={!active}
+                                                loading={remove.isPending}
+                                            >
+                                                删除
+                                            </Button>
+                                        </Popconfirm>
+                                    )}
+                                </Space>
+                            </Flex>
+                        }
+                    >
+                        {isLoading ? (
+                            <Skeleton active paragraph={{ rows: 6 }} />
+                        ) : !data?.length ? (
+                            <Empty description="暂无设备类型" />
+                        ) : (
+                            <Tree
+                                blockNode
+                                selectedKeys={active ? [active.id] : []}
+                                onSelect={(keys) => {
+                                    if (keys.length) setSelected(String(keys[0]));
+                                }}
+                                treeData={data.map((item) => ({
+                                    key: item.id,
+                                    title: (
+                                        <Flex
+                                            justify="space-between"
+                                            align="center"
+                                            gap={4}
+                                            wrap
+                                            className="min-w-0 p-1"
+                                        >
+                                            <span
+                                                title={item.name}
+                                                className="min-w-0 max-w-full truncate"
+                                            >
+                                                {item.name}
+                                            </span>
+                                            <Space size={4} className="shrink-0">
+                                                <Tag color="blue">
+                                                    {(item.config as MqttConfig).points?.length ??
+                                                        0}{' '}
+                                                    个点位
+                                                </Tag>
+                                                <Tag color={item.enabled ? 'green' : 'red'}>
+                                                    {item.enabled ? '启用' : '禁用'}
+                                                </Tag>
+                                            </Space>
+                                        </Flex>
+                                    ),
+                                }))}
+                            />
+                        )}
+                    </Card>
+                </div>
+                <div className="min-h-0 min-w-0 flex-1">
+                    <Card
+                        title={
+                            <Flex justify="space-between" align="center" gap={8} wrap>
+                                <Space size={4} wrap>
+                                    <span>点位配置</span>
+                                    {active && (
+                                        <>
+                                            <Tag>MQTT 3.1.1</Tag>
+                                            <Tag color="blue">
+                                                {config?.points.length ?? 0} 个点位
+                                            </Tag>
+                                            <Tag color="orange">
+                                                {config?.points.filter((point) => point.writable)
+                                                    .length ?? 0}{' '}
+                                                个可写
+                                            </Tag>
+                                        </>
+                                    )}
+                                </Space>
+                                {active && canEdit && (
+                                    <Button type="primary" onClick={() => edit(active)}>
+                                        编辑消息模板
+                                    </Button>
+                                )}
+                            </Flex>
+                        }
+                        className="flex h-full min-h-0 flex-col overflow-hidden"
+                        styles={{
+                            header: { flexShrink: 0 },
+                            body: {
+                                display: 'flex',
+                                flexDirection: 'column',
+                                flex: 1,
+                                minHeight: 0,
+                                overflow: 'hidden',
+                                padding: 16,
+                            },
+                        }}
+                    >
                         {active ? (
                             <>
-                                <div className="flex flex-wrap items-center justify-between gap-2">
-                                    <span className="break-all">Topic：{config?.topic}</span>
-                                    <Space>
-                                        {canEdit && (
-                                            <Button onClick={() => edit(active)}>
-                                                编辑配置和点位
-                                            </Button>
-                                        )}
-                                        {has('iot:protocol:delete') && (
-                                            <Popconfirm
-                                                title="删除此配置？"
-                                                onConfirm={() => remove.mutateAsync(active.id)}
-                                            >
-                                                <Button danger>删除</Button>
-                                            </Popconfirm>
-                                        )}
-                                    </Space>
+                                <div className="mb-3 shrink-0 space-y-1 break-all text-sm">
+                                    <div>上报 Topic：{config?.topic}</div>
+                                    {config?.commandTopic && (
+                                        <div>控制 Topic：{config.commandTopic}</div>
+                                    )}
                                 </div>
-                                <Alert
-                                    type="info"
-                                    message={
-                                        activeIdentity === 'topic'
-                                            ? `从 Topic 第 ${(config?.topicDeviceSegment ?? 1) + 1} 段识别设备编码`
-                                            : activeIdentity === 'payload'
-                                              ? `共享 Topic：从负载字段 ${config?.deviceCodeField} 匹配设备编码`
-                                              : '独立 Topic：按 Topic 绑定设备，{deviceCode} 替换为设备编码'
-                                    }
-                                />
                                 <div ref={viewport} className="min-h-0 flex-1">
                                     <Table
+                                        key={active.id}
                                         rowKey="id"
+                                        size="small"
                                         loading={isLoading}
                                         columns={columns}
                                         dataSource={config?.points ?? []}
-                                        scroll={{ x: 670, y: bodyHeight }}
-                                        pagination={{ pageSize: 20 }}
+                                        scroll={{ x: 890, y: bodyHeight }}
+                                        pagination={{
+                                            pageSize: 20,
+                                            showSizeChanger: false,
+                                            showTotal: (total) => `共 ${total} 个点位`,
+                                        }}
                                     />
                                 </div>
                             </>
                         ) : (
-                            <Empty description={isLoading ? '正在加载' : '暂无 MQTT 配置'} />
+                            <Empty description={isLoading ? '正在加载' : '请选择或新增设备类型'} />
                         )}
-                    </div>
+                    </Card>
                 </div>
-            )}
+            </div>
             <FormModal
                 open={open}
-                title={editing ? '编辑 MQTT 配置' : '新增 MQTT 配置'}
-                onCancel={() => setOpen(false)}
+                title={editing ? '编辑 MQTT 设备类型' : '新增 MQTT 设备类型'}
+                onCancel={close}
                 onOk={submit}
                 confirmLoading={save.isPending}
+                afterOpenChange={(visible) => {
+                    if (visible) editor.current?.parentElement?.scrollTo({ top: 0 });
+                }}
             >
-                <Form form={form} layout="vertical">
-                    <Form.Item name="name" label="配置名称" rules={[{ required: true, max: 64 }]}>
-                        <Input />
-                    </Form.Item>
-                    <Form.Item name="enabled" label="启用" valuePropName="checked">
-                        <Switch />
-                    </Form.Item>
-                    <Form.Item
-                        name={['config', 'topic']}
-                        label="遥测 Topic"
-                        rules={[{ required: true }]}
-                        extra="支持 devices/{deviceCode}/telemetry、devices/+/telemetry 和共享 Topic；+ 匹配一层，# 匹配后续所有层。"
+                <div ref={editor}>
+                    <Form
+                        form={form}
+                        layout="vertical"
+                        onValuesChange={(changed) => {
+                            invalidatePreview();
+                            setFormError('');
+                            if (
+                                ['topic', 'reportTemplate', 'commandTopic', 'commandTemplate'].some(
+                                    (key) => key in changed
+                                )
+                            )
+                                setMappingDirty(true);
+                        }}
                     >
-                        <Input maxLength={1024} />
-                    </Form.Item>
-                    <div className="grid grid-cols-1 gap-x-4 sm:grid-cols-2">
-                        <Form.Item name={['config', 'payloadFormat']} label="负载格式">
-                            <Select
-                                options={[
-                                    { value: 'json', label: 'JSON' },
-                                    { value: 'text', label: '分隔文本' },
-                                    { value: 'binary', label: '二进制' },
-                                ]}
-                                onChange={() => form.setFieldValue(['config', 'recordsPath'], '')}
-                            />
-                        </Form.Item>
-                        <Form.Item name={['config', 'identitySource']} label="设备识别方式">
-                            <Select
-                                options={[
-                                    { value: 'bound', label: '按设备绑定的独立 Topic' },
-                                    { value: 'topic', label: '从 Topic 提取设备编码' },
-                                    { value: 'payload', label: '从负载提取设备编码' },
-                                ]}
-                            />
-                        </Form.Item>
-                    </div>
-                    {identitySource === 'topic' && (
-                        <Form.Item
-                            name={['config', 'topicDeviceSegment']}
-                            label="Topic 设备编码段号"
-                            extra="从 0 开始；devices/D001/telemetry 的设备编码位于第 1 段。"
-                        >
-                            <InputNumber min={0} max={1024} className="w-full" />
-                        </Form.Item>
-                    )}
-                    {identitySource === 'payload' && (
-                        <Form.Item
-                            name={['config', 'deviceCodeField']}
-                            label="负载中的设备标识字段"
-                            extra="JSON 填写字段或路径；文本填写列号；二进制填写偏移:长度:编码:字节序。值须等于设备编码。"
-                        >
-                            <Input placeholder="deviceCode 或 /meta/deviceCode" maxLength={256} />
-                        </Form.Item>
-                    )}
-                    {payloadFormat === 'json' && (
-                        <Form.Item
-                            name={['config', 'recordsPath']}
-                            label="设备记录路径"
-                            extra="留空支持整个负载为单对象或数组；嵌套批量消息填写 /devices 或 /payload/devices。"
-                        >
-                            <Input placeholder="/devices" maxLength={256} />
-                        </Form.Item>
-                    )}
-                    {payloadFormat === 'text' && (
-                        <div className="grid grid-cols-1 gap-x-4 sm:grid-cols-2">
-                            <Form.Item name={['config', 'delimiter']} label="字段分隔符">
-                                <Input maxLength={8} placeholder="," />
-                            </Form.Item>
-                            <Form.Item name={['config', 'recordDelimiter']} label="设备记录分隔符">
-                                <Select
-                                    options={[
-                                        { value: '\n', label: '换行 LF' },
-                                        { value: '\r\n', label: '换行 CRLF' },
-                                        { value: ';', label: '分号' },
-                                        { value: '|', label: '竖线' },
-                                    ]}
-                                />
-                            </Form.Item>
-                        </div>
-                    )}
-                    {payloadFormat === 'binary' && (
-                        <Form.Item
-                            name={['config', 'recordLength']}
-                            label="每条设备记录的字节数"
-                            extra="留空或 0 表示整个负载为一条记录；填写固定长度可拆分批量消息。"
-                        >
-                            <InputNumber min={0} max={1048576} className="w-full" />
-                        </Form.Item>
-                    )}
-                    <div className="grid grid-cols-1 gap-x-4 sm:grid-cols-2">
-                        <Form.Item
-                            name={['config', 'timeField']}
-                            label="设备时间字段"
-                            extra="缺失时使用接收时间；字段语法与点位一致。"
-                        >
-                            <Input maxLength={256} />
-                        </Form.Item>
-                        <Form.Item name={['config', 'timeFormat']} label="时间格式">
-                            <Select
-                                options={[
-                                    { value: 'unix_ms', label: 'Unix 毫秒' },
-                                    { value: 'unix_s', label: 'Unix 秒' },
-                                    { value: 'iso8601', label: 'ISO 8601；无时区时使用设备时区' },
-                                ]}
-                            />
-                        </Form.Item>
-                    </div>
-                    <Form.Item
-                        name={['config', 'commandTopic']}
-                        label="指令 Topic"
-                        extra="可包含 {deviceCode}。共享 Topic 的指令会附加设备标识字段；完成状态表示 Broker 已确认接收。"
-                    >
-                        <Input maxLength={1024} />
-                    </Form.Item>
-                    <div className="grid grid-cols-1 gap-x-4 sm:grid-cols-2">
-                        <Form.Item name={['config', 'qos']} label="订阅 QoS">
-                            <Select
-                                options={[0, 1, 2].map((value) => ({
-                                    value,
-                                    label: `QoS ${value}`,
-                                }))}
-                            />
-                        </Form.Item>
-                        <Form.Item name={['config', 'storagePolicy']} label="存储策略">
-                            <Select options={STORAGE_POLICY_OPTIONS} />
-                        </Form.Item>
-                    </div>
-                    {payloadFormat === 'json' && (
-                        <Form.Item
-                            name={['config', 'commandTemplate']}
-                            label="指令 JSON 模板"
-                            extra={
-                                '留空按点位映射生成；可使用 JSON 字符串占位符 "$deviceCode" 和 "$values"，例如 {"cmd":"set","values":"$values"}。'
-                            }
-                        >
-                            <Input.TextArea rows={3} maxLength={16384} />
-                        </Form.Item>
-                    )}
-                    <Divider>点位映射</Divider>
-                    <Alert
-                        type="info"
-                        className="mb-3"
-                        message={
-                            payloadFormat === 'json'
-                                ? '字段支持 temperature 或 /metrics/temperature；数组索引示例 /values/0。'
-                                : payloadFormat === 'text'
-                                  ? '字段填写从 0 开始的列号。分隔文本按字面分隔，不使用 CSV 引号转义。'
-                                  : '字段示例 0:2:UINT:LE。编码支持 UINT、INT、FLOAT、UTF8、HEX；字节序为 BE 或 LE，默认 BE。'
-                        }
-                    />
-                    <Form.List name={['config', 'points']}>
-                        {(fields, { add, remove: removePoint }) => (
-                            <>
-                                {fields.map((field) => (
-                                    <div
-                                        key={field.key}
-                                        className="mb-3 rounded-lg border border-gray-200 p-3"
-                                    >
-                                        <Form.Item name={[field.name, 'id']} hidden>
-                                            <Input />
-                                        </Form.Item>
-                                        <div className="grid grid-cols-1 gap-x-4 sm:grid-cols-2">
+                        {formError && (
+                            <Alert type="error" showIcon title={formError} className="mb-3" />
+                        )}
+                        <Tabs
+                            activeKey={tab}
+                            onChange={(key) => {
+                                setTab(key);
+                                editor.current?.parentElement?.scrollTo({ top: 0 });
+                            }}
+                            items={[
+                                {
+                                    key: 'template',
+                                    label: '消息模板',
+                                    forceRender: true,
+                                    children: (
+                                        <>
+                                            <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-4">
+                                                <Form.Item
+                                                    name="name"
+                                                    label="配置名称"
+                                                    rules={[
+                                                        {
+                                                            required: true,
+                                                            whitespace: true,
+                                                            max: 64,
+                                                            message:
+                                                                '请输入配置名称，最多 64 个字符',
+                                                        },
+                                                    ]}
+                                                >
+                                                    <Input
+                                                        placeholder="例如：温湿度传感器"
+                                                        maxLength={64}
+                                                    />
+                                                </Form.Item>
+                                                <Form.Item
+                                                    name="enabled"
+                                                    label="启用"
+                                                    valuePropName="checked"
+                                                >
+                                                    <Switch />
+                                                </Form.Item>
+                                            </div>
                                             <Form.Item
-                                                label="名称"
-                                                name={[field.name, 'name']}
-                                                rules={[{ required: true, max: 100 }]}
+                                                name="topic"
+                                                label="上报 Topic"
+                                                extra="用 {deviceCode} 标记设备编码；共享 Topic 时，在消息模板内使用 $deviceCode。"
                                             >
-                                                <Input />
-                                            </Form.Item>
-                                            <Form.Item
-                                                label="字段、列号或二进制位置"
-                                                name={[field.name, 'field']}
-                                                rules={[{ required: true, max: 256 }]}
-                                            >
-                                                <Input />
-                                            </Form.Item>
-                                            <Form.Item label="类型" name={[field.name, 'dataType']}>
-                                                <Select
-                                                    options={['DOUBLE', 'BOOL', 'STRING'].map(
-                                                        (value) => ({ value, label: value })
-                                                    )}
+                                                <Input
+                                                    placeholder="devices/{deviceCode}/telemetry"
+                                                    maxLength={1024}
                                                 />
                                             </Form.Item>
-                                            <Form.Item label="单位" name={[field.name, 'unit']}>
-                                                <Input maxLength={32} />
+                                            <Form.Item
+                                                name="reportTemplate"
+                                                label="上报消息模板"
+                                                extra="$point:名称 标记采集点位；$deviceCode 为设备编码；$time 为设备时间。不采集的字段可省略。"
+                                            >
+                                                <Input.TextArea
+                                                    aria-label="上报消息模板"
+                                                    rows={9}
+                                                    className="font-mono"
+                                                    spellCheck={false}
+                                                    placeholder={MQTT_REPORT_EXAMPLE}
+                                                />
                                             </Form.Item>
-                                            <Form.Item label="倍率" name={[field.name, 'scale']}>
-                                                <InputNumber className="w-full" placeholder="1" />
-                                            </Form.Item>
-                                            <Form.Item label="偏移" name={[field.name, 'offset']}>
-                                                <InputNumber className="w-full" placeholder="0" />
+                                            <Collapse
+                                                items={[
+                                                    {
+                                                        key: 'control',
+                                                        label: '控制消息（可选）',
+                                                        forceRender: true,
+                                                        children: (
+                                                            <>
+                                                                <Form.Item
+                                                                    name="commandTopic"
+                                                                    label="控制 Topic"
+                                                                    extra="不需要控制时，Topic 和模板均留空。"
+                                                                >
+                                                                    <Input
+                                                                        placeholder="devices/{deviceCode}/command"
+                                                                        maxLength={1024}
+                                                                    />
+                                                                </Form.Item>
+                                                                <Form.Item
+                                                                    name="commandTemplate"
+                                                                    label="控制消息模板"
+                                                                    extra="同样使用 $point:名称 和 $deviceCode。引用的点位自动标记为可写；仅下发本次指定的点位，不填充其他点位值。"
+                                                                >
+                                                                    <Input.TextArea
+                                                                        aria-label="控制消息模板"
+                                                                        rows={7}
+                                                                        className="font-mono"
+                                                                        spellCheck={false}
+                                                                        placeholder={
+                                                                            MQTT_COMMAND_EXAMPLE
+                                                                        }
+                                                                    />
+                                                                </Form.Item>
+                                                            </>
+                                                        ),
+                                                    },
+                                                    {
+                                                        key: 'advanced',
+                                                        label: '高级设置',
+                                                        forceRender: true,
+                                                        children: (
+                                                            <div className="grid grid-cols-1 gap-x-4 sm:grid-cols-2">
+                                                                <Form.Item
+                                                                    name="qos"
+                                                                    label="订阅 QoS"
+                                                                >
+                                                                    <Select
+                                                                        options={[0, 1, 2].map(
+                                                                            (value) => ({
+                                                                                value,
+                                                                                label: `QoS ${value}`,
+                                                                            })
+                                                                        )}
+                                                                    />
+                                                                </Form.Item>
+                                                                <Form.Item
+                                                                    name="storagePolicy"
+                                                                    label="存储策略"
+                                                                >
+                                                                    <Select
+                                                                        options={
+                                                                            STORAGE_POLICY_OPTIONS
+                                                                        }
+                                                                    />
+                                                                </Form.Item>
+                                                                <Form.Item
+                                                                    name="timeFormat"
+                                                                    label="设备时间格式"
+                                                                    extra="模板未配置 $time 时，使用接收时间。"
+                                                                >
+                                                                    <Select
+                                                                        options={[
+                                                                            {
+                                                                                value: 'unix_ms',
+                                                                                label: 'Unix 毫秒',
+                                                                            },
+                                                                            {
+                                                                                value: 'unix_s',
+                                                                                label: 'Unix 秒',
+                                                                            },
+                                                                            {
+                                                                                value: 'iso8601',
+                                                                                label: 'ISO 8601',
+                                                                            },
+                                                                        ]}
+                                                                    />
+                                                                </Form.Item>
+                                                            </div>
+                                                        ),
+                                                    },
+                                                ]}
+                                            />
+                                            <Button
+                                                className="mt-4"
+                                                type="primary"
+                                                onClick={generatePoints}
+                                            >
+                                                生成点位并设置属性
+                                            </Button>
+                                        </>
+                                    ),
+                                },
+                                {
+                                    key: 'points',
+                                    label: `点位属性（${points.length}）`,
+                                    forceRender: true,
+                                    children: (
+                                        <>
+                                            {mappingDirty && (
+                                                <Alert
+                                                    type="warning"
+                                                    title="模板已修改，请重新生成点位。保存时也会校验并更新。"
+                                                    className="mb-3"
+                                                    action={
+                                                        <Button
+                                                            size="small"
+                                                            onClick={generatePoints}
+                                                        >
+                                                            生成点位
+                                                        </Button>
+                                                    }
+                                                />
+                                            )}
+                                            <div className="mb-3 text-sm">
+                                                点位由消息模板生成。修改名称、增删点位请编辑模板；展开行可设置倍率、偏移和枚举。
+                                            </div>
+                                            <Table<MqttPoint>
+                                                rowKey="id"
+                                                size="small"
+                                                pagination={false}
+                                                dataSource={points}
+                                                scroll={{ x: 490 }}
+                                                columns={[
+                                                    {
+                                                        title: '点位',
+                                                        dataIndex: 'name',
+                                                        width: 150,
+                                                        render: (name, point) => (
+                                                            <Tooltip title={point.field}>
+                                                                {name}
+                                                            </Tooltip>
+                                                        ),
+                                                    },
+                                                    {
+                                                        title: '类型',
+                                                        width: 120,
+                                                        render: (_, point, index) => (
+                                                            <Form.Item
+                                                                name={['points', index, 'dataType']}
+                                                                className="mb-0"
+                                                            >
+                                                                <Select
+                                                                    aria-label={`${point.name}类型`}
+                                                                    options={MQTT_POINT_TYPES}
+                                                                />
+                                                            </Form.Item>
+                                                        ),
+                                                    },
+                                                    {
+                                                        title: '单位',
+                                                        width: 100,
+                                                        render: (_, point, index) => (
+                                                            <Form.Item
+                                                                name={['points', index, 'unit']}
+                                                                className="mb-0"
+                                                            >
+                                                                <Input
+                                                                    aria-label={`${point.name}单位`}
+                                                                    maxLength={32}
+                                                                />
+                                                            </Form.Item>
+                                                        ),
+                                                    },
+                                                    {
+                                                        title: '读写',
+                                                        width: 80,
+                                                        render: (_, point) =>
+                                                            point.writable ? '可写' : '只读',
+                                                    },
+                                                ]}
+                                                expandable={{
+                                                    expandedRowKeys: expandedPoints,
+                                                    onExpandedRowsChange: (keys) =>
+                                                        setExpandedPoints(keys.map(String)),
+                                                    expandedRowRender: (point, index) => (
+                                                        <>
+                                                            <div className="mb-3 break-all text-sm">
+                                                                消息路径：{point.field}
+                                                            </div>
+                                                            <div className="grid grid-cols-1 gap-x-4 sm:grid-cols-2">
+                                                                <Form.Item
+                                                                    name={[
+                                                                        'points',
+                                                                        index,
+                                                                        'scale',
+                                                                    ]}
+                                                                    label="倍率"
+                                                                    getValueFromEvent={(value) =>
+                                                                        value ?? undefined
+                                                                    }
+                                                                >
+                                                                    <InputNumber
+                                                                        className="w-full"
+                                                                        placeholder="1"
+                                                                    />
+                                                                </Form.Item>
+                                                                <Form.Item
+                                                                    name={[
+                                                                        'points',
+                                                                        index,
+                                                                        'offset',
+                                                                    ]}
+                                                                    label="偏移"
+                                                                    getValueFromEvent={(value) =>
+                                                                        value ?? undefined
+                                                                    }
+                                                                >
+                                                                    <InputNumber
+                                                                        className="w-full"
+                                                                        placeholder="0"
+                                                                    />
+                                                                </Form.Item>
+                                                            </div>
+                                                            <Form.List
+                                                                name={[
+                                                                    'points',
+                                                                    index,
+                                                                    'enumValues',
+                                                                ]}
+                                                            >
+                                                                {(
+                                                                    fields,
+                                                                    { add, remove: removeValue }
+                                                                ) => (
+                                                                    <>
+                                                                        {fields.map((field) => (
+                                                                            <div
+                                                                                key={field.key}
+                                                                                className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] gap-x-2"
+                                                                            >
+                                                                                <Form.Item
+                                                                                    name={[
+                                                                                        field.name,
+                                                                                        'input',
+                                                                                    ]}
+                                                                                    label="枚举原值"
+                                                                                >
+                                                                                    <Input
+                                                                                        maxLength={
+                                                                                            256
+                                                                                        }
+                                                                                    />
+                                                                                </Form.Item>
+                                                                                <Form.Item
+                                                                                    name={[
+                                                                                        field.name,
+                                                                                        'output',
+                                                                                    ]}
+                                                                                    label="转换值"
+                                                                                >
+                                                                                    <Input
+                                                                                        maxLength={
+                                                                                            256
+                                                                                        }
+                                                                                    />
+                                                                                </Form.Item>
+                                                                                <Button
+                                                                                    danger
+                                                                                    type="text"
+                                                                                    className="mt-7"
+                                                                                    onClick={() =>
+                                                                                        removeValue(
+                                                                                            field.name
+                                                                                        )
+                                                                                    }
+                                                                                >
+                                                                                    删除
+                                                                                </Button>
+                                                                            </div>
+                                                                        ))}
+                                                                        <Button
+                                                                            size="small"
+                                                                            disabled={
+                                                                                fields.length >= 64
+                                                                            }
+                                                                            onClick={() =>
+                                                                                add({
+                                                                                    input: '',
+                                                                                    output: '',
+                                                                                })
+                                                                            }
+                                                                        >
+                                                                            添加枚举映射
+                                                                        </Button>
+                                                                    </>
+                                                                )}
+                                                            </Form.List>
+                                                        </>
+                                                    ),
+                                                }}
+                                            />
+                                        </>
+                                    ),
+                                },
+                                {
+                                    key: 'preview',
+                                    label: '解析测试',
+                                    children: (
+                                        <>
+                                            <Alert
+                                                type="info"
+                                                title="使用服务端解析器验证上报消息，不保存配置、不连接 Broker，也不下发控制消息。"
+                                                className="mb-3"
+                                            />
+                                            <div className="grid grid-cols-1 gap-x-4 sm:grid-cols-2">
+                                                <Form.Item label="示例 Topic">
+                                                    <Input
+                                                        aria-label="示例 Topic"
+                                                        value={sampleTopic}
+                                                        onChange={(event) => {
+                                                            invalidatePreview();
+                                                            setSampleTopic(event.target.value);
+                                                        }}
+                                                    />
+                                                </Form.Item>
+                                                <Form.Item
+                                                    label="测试设备编码"
+                                                    extra="共享 Topic 时可留空，查看所有设备记录。"
+                                                >
+                                                    <Input
+                                                        aria-label="测试设备编码"
+                                                        value={sampleCode}
+                                                        onChange={(event) => {
+                                                            invalidatePreview();
+                                                            setSampleCode(event.target.value);
+                                                        }}
+                                                    />
+                                                </Form.Item>
+                                            </div>
+                                            <Form.Item label="实际 JSON 消息">
+                                                <Input.TextArea
+                                                    aria-label="实际 JSON 消息"
+                                                    rows={8}
+                                                    className="font-mono"
+                                                    spellCheck={false}
+                                                    value={samplePayload}
+                                                    onChange={(event) => {
+                                                        invalidatePreview();
+                                                        setSamplePayload(event.target.value);
+                                                    }}
+                                                />
                                             </Form.Item>
                                             <Form.Item
-                                                label="可写"
-                                                name={[field.name, 'writable']}
-                                                valuePropName="checked"
+                                                label="测试设备时区"
+                                                extra="仅用于不含时区的 ISO 时间，格式为 ±HH:MM。"
                                             >
-                                                <Switch />
+                                                <Input
+                                                    value={sampleTimezone}
+                                                    maxLength={6}
+                                                    onChange={(event) => {
+                                                        invalidatePreview();
+                                                        setSampleTimezone(event.target.value);
+                                                    }}
+                                                />
                                             </Form.Item>
-                                        </div>
-                                        <Form.List name={[field.name, 'enumValues']}>
-                                            {(values, { add: addValue, remove: removeValue }) => (
-                                                <div className="mb-3">
-                                                    {values.map((value) => (
-                                                        <div
-                                                            key={value.key}
-                                                            className="grid grid-cols-1 gap-x-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]"
-                                                        >
-                                                            <Form.Item
-                                                                name={[value.name, 'input']}
-                                                                label="枚举原值"
-                                                            >
-                                                                <Input maxLength={256} />
-                                                            </Form.Item>
-                                                            <Form.Item
-                                                                name={[value.name, 'output']}
-                                                                label="转换值"
-                                                            >
-                                                                <Input maxLength={256} />
-                                                            </Form.Item>
-                                                            <Button
-                                                                danger
-                                                                type="text"
-                                                                onClick={() =>
-                                                                    removeValue(value.name)
-                                                                }
-                                                            >
-                                                                删除映射
-                                                            </Button>
-                                                        </div>
-                                                    ))}
-                                                    <Button
-                                                        size="small"
-                                                        disabled={values.length >= 64}
-                                                        onClick={() =>
-                                                            addValue({ input: '', output: '' })
-                                                        }
-                                                    >
-                                                        添加枚举映射
-                                                    </Button>
-                                                </div>
+                                            <Button onClick={parseSample} loading={previewBusy}>
+                                                解析消息
+                                            </Button>
+                                            {previewError && (
+                                                <Alert
+                                                    className="mt-3"
+                                                    type="error"
+                                                    title={previewError}
+                                                />
                                             )}
-                                        </Form.List>
-                                        <Button danger onClick={() => removePoint(field.name)}>
-                                            删除点位
-                                        </Button>
-                                    </div>
-                                ))}
-                                <Button
-                                    block
-                                    type="dashed"
-                                    disabled={fields.length >= 256}
-                                    onClick={() =>
-                                        add({
-                                            id: generateId(),
-                                            name: '',
-                                            field: '',
-                                            dataType: 'DOUBLE',
-                                            unit: '',
-                                            writable: false,
-                                        })
-                                    }
-                                >
-                                    添加点位
-                                </Button>
-                            </>
-                        )}
-                    </Form.List>
-                    <Divider>解析预览</Divider>
-                    <div className="grid grid-cols-1 gap-x-4 sm:grid-cols-2">
-                        <Form.Item label="示例 Topic">
-                            <Input
-                                value={sampleTopic}
-                                onChange={(event) => setSampleTopic(event.target.value)}
-                            />
-                        </Form.Item>
-                        <Form.Item
-                            label="测试设备编码"
-                            extra="负载或 Topic 识别时可留空，查看所有记录。"
-                        >
-                            <Input
-                                value={sampleCode}
-                                onChange={(event) => setSampleCode(event.target.value)}
-                            />
-                        </Form.Item>
-                    </div>
-                    <Form.Item
-                        label={payloadFormat === 'binary' ? '示例负载（HEX 字节）' : '示例负载'}
-                    >
-                        <Input.TextArea
-                            rows={4}
-                            value={samplePayload}
-                            onChange={(event) => setSamplePayload(event.target.value)}
+                                            {preview?.records.map((record) => (
+                                                <Card
+                                                    key={record.key}
+                                                    size="small"
+                                                    className="mt-3"
+                                                    title={`设备 ${record.deviceCode || '未识别'} · ${record.time}`}
+                                                >
+                                                    {record.errors.length > 0 && (
+                                                        <Alert
+                                                            type="warning"
+                                                            className="mb-2"
+                                                            title={record.errors.join('；')}
+                                                        />
+                                                    )}
+                                                    <Table
+                                                        rowKey="id"
+                                                        size="small"
+                                                        pagination={false}
+                                                        scroll={{ x: 420 }}
+                                                        dataSource={record.points}
+                                                        columns={[
+                                                            { title: '点位', dataIndex: 'name' },
+                                                            { title: '值', dataIndex: 'value' },
+                                                            { title: '单位', dataIndex: 'unit' },
+                                                        ]}
+                                                    />
+                                                </Card>
+                                            ))}
+                                            {preview && preview.records.length === 0 && (
+                                                <Empty description="未找到设备记录" />
+                                            )}
+                                        </>
+                                    ),
+                                },
+                            ]}
                         />
-                    </Form.Item>
-                    <Form.Item
-                        label="测试设备时区"
-                        extra="无时区的 ISO 时间按此值解释，格式为 ±HH:MM。"
-                    >
-                        <Input
-                            value={sampleTimezone}
-                            maxLength={6}
-                            onChange={(event) => setSampleTimezone(event.target.value)}
-                        />
-                    </Form.Item>
-                    <Button onClick={parseSample} loading={previewBusy}>
-                        预览解析结果
-                    </Button>
-                    {previewError && <Alert className="mt-3" type="error" message={previewError} />}
-                    {preview?.records.map((record) => (
-                        <Card
-                            key={record.key}
-                            size="small"
-                            className="mt-3"
-                            title={`设备 ${record.deviceCode || '未识别'} · ${record.time}`}
-                        >
-                            {record.errors.length > 0 && (
-                                <Alert
-                                    type="warning"
-                                    className="mb-2"
-                                    message={record.errors.join('；')}
-                                />
-                            )}
-                            <Table
-                                rowKey="id"
-                                size="small"
-                                pagination={false}
-                                scroll={{ x: 420 }}
-                                dataSource={record.points}
-                                columns={[
-                                    { title: '点位', dataIndex: 'name' },
-                                    { title: '值', dataIndex: 'value' },
-                                    { title: '单位', dataIndex: 'unit' },
-                                ]}
-                            />
-                        </Card>
-                    ))}
-                    {preview && preview.records.length === 0 && (
-                        <Empty description="未找到设备记录" />
-                    )}
-                </Form>
+                    </Form>
+                </div>
             </FormModal>
         </PageContainer>
     );

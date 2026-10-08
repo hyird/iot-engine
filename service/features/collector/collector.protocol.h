@@ -207,12 +207,12 @@ class ProtocolSessionFactory {
 
 namespace service::collector::command {
 
-// 完整功能命令保持为一个任务；可独立写入的点位分别跟踪应答和回读。
+// 完整功能或消息模板保持为一个任务；独立点位写入分别跟踪应答和回读。
 inline std::vector<std::vector<CommandElementValue>> groupElements(
     const ProtocolDefinition& definition, std::vector<CommandElementValue> requested) {
     std::vector<std::vector<CommandElementValue>> tasks;
     if (requested.empty()) return tasks;
-    if (definition.commandLayout == CommandLayout::CompleteFunction) {
+    if (definition.commandLayout != CommandLayout::WritableElements) {
         tasks.push_back(std::move(requested));
     } else {
         tasks.reserve(requested.size());
@@ -358,7 +358,7 @@ inline ResolvedCommand resolve(const DeviceDefinition& device,
             });
         if (matched == device.elements.end())
             throw std::invalid_argument("command_invalid: element is not configured");
-        if (definition.commandLayout == CommandLayout::WritableElements && !matched->writable)
+        if (definition.commandLayout != CommandLayout::CompleteFunction && !matched->writable)
             throw std::invalid_argument("command_invalid: element is not writable");
         if (definition.commandLayout == CommandLayout::CompleteFunction) {
             if (matched->direction != "DOWN" || matched->encoding == "JPEG")
