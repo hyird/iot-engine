@@ -6,7 +6,7 @@
 #include <type_traits>
 
 #include <ruvia/core/EventLoopPool.h>
-#include <ruvia/web/detail/redis/RedisTypesAccess.h>
+#include "tests/redis_reply.fixture.h"
 
 #include "service/features/observability/observability.service.h"
 #include "service/features/edge/edge.runtime.h"
@@ -24,7 +24,7 @@ struct RecordingRedis {
     ruvia::Task<ruvia::RedisValue> eval(std::string_view, std::span<const std::string_view> inputKeys, std::span<const std::string_view> inputArguments) const {
         keys.assign(inputKeys.begin(), inputKeys.end());
         arguments.assign(inputArguments.begin(), inputArguments.end());
-        co_return ruvia::detail::RedisTypesAccess::stringValue("1-0", std::pmr::get_default_resource());
+        co_return test::redisString("1-0", std::pmr::get_default_resource());
     }
 };
 
@@ -70,7 +70,7 @@ ruvia::Task<Observation> observe(ruvia::EventLoop loop, ruvia::WorkerHandle fore
 
 int main() {
     try {
-        ruvia::EventLoopPool pool({ .loopCount = 2, .mailboxCapacity = 64 });
+        ruvia::EventLoopPool pool({ .loopCount = 2, .queue_capacity = 64 });
         pool.start();
         auto first = pool.loop(0);
         auto second = pool.loop(1);

@@ -1,36 +1,4 @@
-cmake_minimum_required(VERSION 3.24)
-
-if(NOT CMAKE_TOOLCHAIN_FILE)
-    if("$ENV{VCPKG_ROOT}" STREQUAL "")
-        message(FATAL_ERROR "VCPKG_ROOT is not set")
-    endif()
-    file(TO_CMAKE_PATH "$ENV{VCPKG_ROOT}" VCPKG_ROOT_PATH)
-    set(CMAKE_TOOLCHAIN_FILE
-        "${VCPKG_ROOT_PATH}/scripts/buildsystems/vcpkg.cmake" CACHE FILEPATH "")
-endif()
-
-if(NOT "$ENV{VCPKG_DEFAULT_TRIPLET}" STREQUAL "")
-    set(VCPKG_TARGET_TRIPLET "$ENV{VCPKG_DEFAULT_TRIPLET}" CACHE STRING "")
-endif()
-
-if(NOT "$ENV{VCPKG_DEFAULT_HOST_TRIPLET}" STREQUAL "")
-    set(VCPKG_HOST_TRIPLET "$ENV{VCPKG_DEFAULT_HOST_TRIPLET}" CACHE STRING "")
-endif()
-
-list(PREPEND VCPKG_OVERLAY_PORTS
-    "${CMAKE_CURRENT_SOURCE_DIR}/ports/vcpkg")
-list(REMOVE_DUPLICATES VCPKG_OVERLAY_PORTS)
-list(APPEND VCPKG_INSTALL_OPTIONS --no-print-usage)
-list(REMOVE_DUPLICATES VCPKG_INSTALL_OPTIONS)
-
-# ZLMediaKit and its Find*.cmake modules use CMAKE_BUILD_TYPE even with
-# multi-config generators. Set the dependency-discovery configuration before
-# project() loads the vcpkg toolchain, otherwise Visual Studio can bind Release
-# targets to /MTd libraries from debug/lib.
-if(CMAKE_GENERATOR MATCHES "Visual Studio|Xcode|Ninja Multi-Config")
-    set(CMAKE_BUILD_TYPE "Release" CACHE STRING
-        "Dependency-discovery configuration for multi-config generators" FORCE)
-endif()
+cmake_minimum_required(VERSION 3.28)
 
 project(iot_engine VERSION 0.1.0 LANGUAGES C CXX)
 
@@ -56,8 +24,10 @@ set(RUVIA_ENABLE_JWT ON CACHE BOOL "" FORCE)
 
 FetchContent_Declare(ruvia
     GIT_REPOSITORY https://github.com/hyird/Ruvia.git
-    GIT_TAG e4058c9573d8021d0694a79aebae41883fa4760d)
+    GIT_TAG 66cd98f6380801ca056b9d2d94dd177be2aa4b3b)
 FetchContent_MakeAvailable(ruvia)
+include("${CMAKE_CURRENT_SOURCE_DIR}/ports/cmake/dependencies.cmake")
+iot_engine_fetch_dependencies()
 
 FetchContent_Declare(nanopb
     GIT_REPOSITORY https://github.com/nanopb/nanopb.git
@@ -68,7 +38,7 @@ FetchContent_Declare(nanopb
 FetchContent_MakeAvailable(nanopb)
 
 # ZLMediaKit's C SDK exposes PCM-to-AAC input only when FAAC is present. FAAC
-# does not ship a CMake build or a vcpkg port, so build its upstream static
+# does not ship a CMake build, so build its upstream static
 # library directly from the source list used by its own MSVC project.
 FetchContent_Declare(faac_source
     GIT_REPOSITORY https://github.com/knik0/faac.git
@@ -165,7 +135,10 @@ if(DEFINED CMAKE_MESSAGE_LOG_LEVEL)
     set(IOT_ENGINE_MESSAGE_LOG_LEVEL_DEFINED TRUE)
 endif()
 set(CMAKE_MESSAGE_LOG_LEVEL WARNING)
+set(CMAKE_DISABLE_FIND_PACKAGE_PkgConfig ON)
 FetchContent_MakeAvailable(zlmediakit)
+unset(CMAKE_DISABLE_FIND_PACKAGE_PkgConfig)
+iot_engine_write_license_manifest()
 if(IOT_ENGINE_MESSAGE_LOG_LEVEL_DEFINED)
     set(CMAKE_MESSAGE_LOG_LEVEL "${IOT_ENGINE_MESSAGE_LOG_LEVEL}")
 else()
@@ -229,18 +202,7 @@ if(MSVC)
     target_compile_definitions(mk_api INTERFACE GENERATE_EXPORT)
 endif()
 
-find_package(Protobuf CONFIG REQUIRED)
-find_package(unofficial-brotli CONFIG REQUIRED)
-find_package(pugixml CONFIG REQUIRED)
 
-# Rebind Brotli to vcpkg's configuration-aware imported targets.
-if(TARGET Brotli_lib
-   AND TARGET unofficial::brotli::brotlidec
-   AND TARGET unofficial::brotli::brotlienc)
-    set_target_properties(Brotli_lib PROPERTIES
-        INTERFACE_LINK_LIBRARIES
-        "unofficial::brotli::brotlidec;unofficial::brotli::brotlienc")
-endif()
 
 set(EDGENODE_PROTO_DIR "${CMAKE_CURRENT_SOURCE_DIR}/service/features/edge")
 set(EDGENODE_GENERATED_DIR "${CMAKE_BINARY_DIR}/generated/edgenode")
@@ -287,10 +249,6 @@ target_include_directories(edgenode-protocol PUBLIC "${EDGENODE_GENERATED_DIR}")
 target_link_libraries(edgenode-protocol PUBLIC protobuf::libprotobuf)
 iot_engine_configure_target(edgenode-protocol)
 
-# Ruvia's standalone manifest features do not belong to this parent manifest.
-unset(VCPKG_MANIFEST_FEATURES CACHE)
-
-find_package(spdlog CONFIG REQUIRED)
 
 add_executable(iot-engine
     service/server.cpp
@@ -308,7 +266,7 @@ target_include_directories(iot-engine PRIVATE
     "${EDGENODE_GENERATED_DIR}")
 target_link_libraries(iot-engine PRIVATE
     ruvia::web
-    PostgreSQL::PostgreSQL
+    ruvia_postgresql_backend
     pugixml::pugixml
     spdlog::spdlog
     edgenode-protocol
@@ -330,7 +288,7 @@ iot_engine_add_test(base64
 
 iot_engine_add_test(derived-point LARGE
     SOURCES tests/derived-point-test.cpp
-    LIBRARIES ruvia::web)
+    LIBRARIES ruvia::web OpenSSL::Crypto)
 iot_engine_add_test(request-validation LARGE
     SOURCES tests/request-validation-test.cpp
     LIBRARIES ruvia::web)
@@ -369,11 +327,11 @@ iot_engine_add_test(access-webhook
 
 iot_engine_add_test(storage-policy LARGE
     SOURCES tests/storage-policy-test.cpp
-    LIBRARIES ruvia::web)
+    LIBRARIES ruvia::web OpenSSL::Crypto)
 
 iot_engine_add_test(edge-protocol
     SOURCES tests/edge-protocol-test.cpp
-    LIBRARIES edgenode-protocol ruvia::web)
+    LIBRARIES edgenode-protocol ruvia::web OpenSSL::Crypto)
 
 iot_engine_add_test(edge-serial-debug
     SOURCES tests/edge-serial-debug-test.cpp
@@ -390,7 +348,7 @@ iot_engine_add_test(vpn-cidr
 
 iot_engine_add_test(edge-config LARGE
     SOURCES tests/edge-config-test.cpp
-    LIBRARIES ruvia::web edgenode-protocol OpenSSL::Crypto)
+    LIBRARIES ruvia::web edgenode-protocol OpenSSL::Crypto spdlog::spdlog)
 
 iot_engine_add_test(api-upload
     SOURCES tests/api-upload-test.cpp
@@ -406,7 +364,7 @@ iot_engine_add_test(edge-metadata
 
 iot_engine_add_test(collector-state
     SOURCES tests/collector-state-test.cpp
-    LIBRARIES ruvia::web)
+    LIBRARIES ruvia::web OpenSSL::Crypto)
 
 iot_engine_add_test(edge-service LARGE
     SOURCES tests/edge-service-test.cpp
@@ -422,7 +380,7 @@ iot_engine_add_test(architecture
 
 iot_engine_add_test(worker-isolation LARGE
     SOURCES tests/worker-isolation-test.cpp
-    LIBRARIES ruvia::web edgenode-protocol OpenSSL::Crypto)
+    LIBRARIES ruvia::web edgenode-protocol OpenSSL::Crypto spdlog::spdlog)
 
 iot_engine_add_test(alert-runtime LARGE
     SOURCES tests/alert-runtime-test.cpp

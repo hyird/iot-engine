@@ -4,7 +4,7 @@
 #include <string>
 
 #include <ruvia/core/EventLoopPool.h>
-#include <ruvia/web/detail/redis/RedisTypesAccess.h>
+#include "tests/redis_reply.fixture.h"
 #include "service/features/collector/collector.service.h"
 
 namespace {
@@ -17,11 +17,10 @@ struct TransmissionRedis {
     enum class Reply { Success, Duplicate, Error } reply = Reply::Success;
     ruvia::Task<ruvia::RedisValue> command(std::span<const std::string_view> values) const {
         arguments.assign(values.begin(), values.end());
-        using Access = ruvia::detail::RedisTypesAccess;
         const auto resource = std::pmr::get_default_resource();
-        if (reply == Reply::Duplicate) co_return Access::nullValue(resource);
-        if (reply == Reply::Error) co_return Access::errorValue("injected transmission failure", resource);
-        co_return Access::stringValue("OK", resource);
+        if (reply == Reply::Duplicate) co_return test::redisNull(resource);
+        if (reply == Reply::Error) co_return test::redisError("injected transmission failure", resource);
+        co_return test::redisString("OK", resource);
     }
 };
 

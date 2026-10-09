@@ -2148,7 +2148,7 @@ class CollectorWorkerPool final {
         redisConfig.commandTimeout = std::nullopt;
         try {
             pool_ = std::make_unique<ruvia::EventLoopPool>(
-                ruvia::EventLoopPoolOptions{ .loopCount = workerCount, .mailboxCapacity = 8192 }
+                ruvia::EventLoopPoolOptions{ .loopCount = workerCount, .queue_capacity = 8192 }
             );
             workers_.resize(workerCount);
             pool_->start();

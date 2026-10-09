@@ -178,7 +178,7 @@ Topic 层号、文本列号、二进制偏移均从 `0` 开始。`+` 独占一�
 
 ## Ruvia 与验证
 
-Ruvia 固定为 `e4058c9573d8021d0694a79aebae41883fa4760d`。升级配套引入该提交的 OpenSSL 3.6.4 overlay，来源和许可证见 `ports/vcpkg/openssl/README.md`。HTTP 二进制响应读取迁移到公开的 `bytes()`。
+Ruvia 固定为 `66cd98f6380801ca056b9d2d94dd177be2aa4b3b`。依赖通过 CMake FetchContent 获取，Ruvia 统一构建 OpenSSL 4，额外依赖版本和源码哈希见 `ports/cmake/dependencies.cmake`。HTTP 二进制响应使用公开的 `bytes()`。
 
 新增后端测试 `mqtt-protocol`、`mqtt-transport`、`mqtt-configuration`，覆盖帧、QoS、设备路由、配置、预览、三种负载格式、指令编码、真实 TCP Broker、重连、域名和连接归属。
 

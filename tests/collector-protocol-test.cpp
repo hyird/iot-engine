@@ -22,8 +22,9 @@
 #include <utility>
 #include <vector>
 
-#include <ruvia/core/detail/io/AsioAwait.h>
-#include <ruvia/web/detail/redis/RedisTypesAccess.h>
+#include <ruvia/core/EventLoopPool.h>
+#include <type_traits>
+#include "tests/redis_reply.fixture.h"
 
 #include "service/middleware/log.h"
 #include "service/features/packet_log/packet_log.transport.h"
@@ -51,52 +52,18 @@ namespace {
 
 template <typename Result>
 Result runTask(ruvia::Task<Result> task) {
-    asio::io_context context;
-    std::optional<Result> result;
-    std::exception_ptr exception;
-    asio::co_spawn(
-        context,
-        [task = std::move(task), &result, &exception]() mutable -> asio::awaitable<void> {
-            try {
-                result.emplace(co_await ruvia::detail::taskAsAwaitable(std::move(task)));
-            } catch (...) {
-                exception = std::current_exception();
-            }
-        },
-        asio::detached
-    );
-    context.run();
-    if (exception) {
-        std::rethrow_exception(exception);
-    }
-    if (!result) {
-        throw std::runtime_error("task produced no result");
-    }
-    return std::move(*result);
-}
-
-void runTask(ruvia::Task<void> task) {
-    asio::io_context context;
-    bool completed = false;
-    std::exception_ptr exception;
-    asio::co_spawn(
-        context,
-        [task = std::move(task), &completed, &exception]() mutable -> asio::awaitable<void> {
-            try {
-                co_await ruvia::detail::taskAsAwaitable(std::move(task));
-                completed = true;
-            } catch (...) {
-                exception = std::current_exception();
-            }
-        },
-        asio::detached
-    );
-    context.run();
-    if (exception) {
-        std::rethrow_exception(exception);
-    }
-    if (!completed) {
-        throw std::runtime_error("task produced no completion");
+    ruvia::EventLoopPool pool({.loopCount = 1});
+    pool.start();
+    auto completion = pool.loop(0).start(std::move(task));
+    if constexpr (std::is_void_v<Result>) {
+        completion.get();
+        pool.stop();
+        pool.join();
+    } else {
+        auto result = completion.get();
+        pool.stop();
+        pool.join();
+        return result;
     }
 }
 
@@ -161,7 +128,7 @@ struct RuntimeRepositoryScaleDb {
 
 struct RecordingRedis {
     explicit RecordingRedis(std::int64_t result)
-        : reply(ruvia::detail::RedisTypesAccess::integerValue(result, std::pmr::get_default_resource())) {}
+        : reply(test::redisInteger(result, std::pmr::get_default_resource())) {}
 
     ruvia::Task<ruvia::RedisValue>
     eval(std::string_view value, std::span<const std::string_view> inputKeys, std::span<const std::string_view> inputArguments) const {
@@ -203,10 +170,10 @@ struct AlertScheduleRedis {
                 if (!command.empty() && command.front() == "EVALSHA" &&
                     state->invalidStoredDuration &&
                     state->script.find("if duration then") == std::string::npos) {
-                    replies.push_back(ruvia::detail::RedisTypesAccess::errorValue("attempt to perform arithmetic on a nil value", std::pmr::get_default_resource()));
+                    replies.push_back(test::redisError("attempt to perform arithmetic on a nil value", std::pmr::get_default_resource()));
                     continue;
                 }
-                replies.push_back(ruvia::detail::RedisTypesAccess::integerValue(1, std::pmr::get_default_resource()));
+                replies.push_back(test::redisInteger(1, std::pmr::get_default_resource()));
             }
             co_return replies;
         }
@@ -223,7 +190,7 @@ struct AlertScheduleRedis {
 struct FailingLatestPipeline {
     ruvia::Task<std::pmr::vector<ruvia::RedisValue>> exec() && {
         std::pmr::vector<ruvia::RedisValue> replies;
-        replies.push_back(ruvia::detail::RedisTypesAccess::errorValue("injected latest projection failure", std::pmr::get_default_resource()));
+        replies.push_back(test::redisError("injected latest projection failure", std::pmr::get_default_resource()));
         co_return replies;
     }
 };
@@ -245,7 +212,7 @@ struct FailingConfigRedis {
             std::pmr::vector<ruvia::RedisValue> replies;
             replies.reserve(commands.size());
             for (std::size_t index = 0; index < commands.size(); ++index) {
-                replies.push_back(ruvia::detail::RedisTypesAccess::integerValue(1, std::pmr::get_default_resource()));
+                replies.push_back(test::redisInteger(1, std::pmr::get_default_resource()));
             }
             co_return replies;
         }
@@ -256,49 +223,49 @@ struct FailingConfigRedis {
     ruvia::Task<ruvia::RedisValue>
     command(std::span<const std::string_view> arguments) const {
         if (arguments.empty()) {
-            co_return ruvia::detail::RedisTypesAccess::errorValue(
+            co_return test::redisError(
                 "empty command",
                 std::pmr::get_default_resource()
             );
         }
         commands.emplace_back(arguments.begin(), arguments.end());
         if (arguments.front() == "GET" && !hasActiveVersion) {
-            co_return ruvia::detail::RedisTypesAccess::nullValue(
+            co_return test::redisNull(
                 std::pmr::get_default_resource()
             );
         }
         if (arguments.front() == "GET") {
-            co_return ruvia::detail::RedisTypesAccess::stringValue(
+            co_return test::redisString(
                 "previous-version",
                 std::pmr::get_default_resource()
             );
         }
         if (arguments.front() == "HGET") {
-            co_return ruvia::detail::RedisTypesAccess::stringValue(
+            co_return test::redisString(
                 "different-signature",
                 std::pmr::get_default_resource()
             );
         }
         if (arguments.front() == "SET" && failActiveSet) {
-            co_return ruvia::detail::RedisTypesAccess::errorValue(
+            co_return test::redisError(
                 "injected active pointer failure",
                 std::pmr::get_default_resource()
             );
         }
         if (arguments.front() == "SET") {
-            co_return ruvia::detail::RedisTypesAccess::stringValue(
+            co_return test::redisString(
                 "OK",
                 std::pmr::get_default_resource()
             );
         }
         if (arguments.front() == "ZRANGEBYSCORE") {
             std::pmr::vector<ruvia::RedisValue> values;
-            co_return ruvia::detail::RedisTypesAccess::arrayValue(
+            co_return test::redisArray(
                 std::move(values),
                 std::pmr::get_default_resource()
             );
         }
-        co_return ruvia::detail::RedisTypesAccess::integerValue(
+        co_return test::redisInteger(
             1,
             std::pmr::get_default_resource()
         );
@@ -329,7 +296,7 @@ struct RecordingLatestRedis {
         }
 
         static ruvia::RedisValue string(std::string_view value) {
-            return ruvia::detail::RedisTypesAccess::stringValue(
+            return test::redisString(
                 value,
                 std::pmr::get_default_resource()
             );
@@ -339,7 +306,7 @@ struct RecordingLatestRedis {
             std::pmr::vector<ruvia::RedisValue> values;
             values.push_back(string("device-1"));
             values.push_back(string("{\"temperature\":true}"));
-            return ruvia::detail::RedisTypesAccess::arrayValue(
+            return test::redisArray(
                 std::move(values),
                 std::pmr::get_default_resource()
             );
@@ -349,7 +316,7 @@ struct RecordingLatestRedis {
             std::pmr::vector<ruvia::RedisValue> values;
             values.push_back(string("device-1"));
             values.push_back(string(state->preservedOnlineUntilMs));
-            return ruvia::detail::RedisTypesAccess::arrayValue(
+            return test::redisArray(
                 std::move(values),
                 std::pmr::get_default_resource()
             );
@@ -367,7 +334,7 @@ struct RecordingLatestRedis {
                            command[1] == "iot:v2:runtime:device:device-1") {
                     replies.push_back(existingRuntimeReply());
                 } else {
-                    replies.push_back(ruvia::detail::RedisTypesAccess::integerValue(1, std::pmr::get_default_resource()));
+                    replies.push_back(test::redisInteger(1, std::pmr::get_default_resource()));
                 }
             }
             co_return replies;
@@ -380,12 +347,12 @@ struct RecordingLatestRedis {
     command(std::span<const std::string_view> arguments) const {
         state->directCommands.emplace_back(arguments.begin(), arguments.end());
         if (!arguments.empty() && arguments.front() == "XADD") {
-            co_return ruvia::detail::RedisTypesAccess::stringValue(
+            co_return test::redisString(
                 "1-0",
                 std::pmr::get_default_resource()
             );
         }
-        co_return ruvia::detail::RedisTypesAccess::integerValue(
+        co_return test::redisInteger(
             1,
             std::pmr::get_default_resource()
         );

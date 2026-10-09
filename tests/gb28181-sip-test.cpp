@@ -426,7 +426,7 @@ void verifyKeepaliveExpiry(service::common::UuidV7Generator& uuidGenerator, std:
 
 void verifyDualUdpWorkerOwnership(const SipConfig& baseSip, const MediaConfig& media, ZlmSdk& zlm) {
     ruvia::EventLoopPool dualPool(
-        ruvia::EventLoopPoolOptions{ .loopCount = 2, .mailboxCapacity = 128 }
+        ruvia::EventLoopPoolOptions{ .loopCount = 2, .queue_capacity = 128 }
     );
     dualPool.start();
 
@@ -737,7 +737,7 @@ std::string recordInfoMessage(std::string_view sn, std::string_view deviceId) {
 int main() {
     service::common::UuidV7Generator uuidGenerator;
     ruvia::EventLoopPool pool(
-        ruvia::EventLoopPoolOptions{ .loopCount = 1, .mailboxCapacity = 128 }
+        ruvia::EventLoopPoolOptions{ .loopCount = 1, .queue_capacity = 128 }
     );
     std::shared_ptr<SipServer> server;
     std::unique_ptr<DeviceRegistry> devices;

@@ -163,7 +163,7 @@ int main() {
         std::promise<void> ready;
         auto started = ready.get_future();
         app.blockingPool(nullptr).listen({.address = "127.0.0.1", .http = port})
-            .server({.workerCount = 2})
+            .server({.worker_count = 2})
             .httpClient({.alias = "link-public-ip", .config = {
                 .scheme = ruvia::HttpScheme::kHttp, .host = "127.0.0.1", .port = origin.port(),
                 .requestTimeout = 2s, .maxResponseBytes = 64U * 1024U,

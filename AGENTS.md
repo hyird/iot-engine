@@ -349,7 +349,7 @@ build/                      # 构建、后端生成代码、临时验证产物
 - Windows 客户端依赖、构建、测试、安装包统一经 CMake。
 - `clients/` 不留 `.ps1` 构建脚本，保留依赖锁定、校验及打包验证。
 - Ruvia 固定完整提交 SHA，升级统一迁移公开 API，不增加过渡宏、包装接口或兼容头。
-- vcpkg 固定提交。
+- 依赖统一通过 CMake FetchContent 获取，固定源码版本与归档哈希；Linux、Windows 及本地使用同一套依赖定义，不使用 vcpkg。
 - 工具链以 `.github/workflows/build.yml` 为准，缓存区分平台、架构、编译器、依赖输入。
 - CI 仅支持 Linux、Windows；发布须两平台构建与测试通过，制品同一提交。
 - 单平台例外须用户明确接受，并记录未覆盖平台。

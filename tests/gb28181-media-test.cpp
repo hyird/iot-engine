@@ -54,7 +54,7 @@ ruvia::Task<void> closeOwnedRtp(std::size_t owner, std::string stream) {
 void verifySdkCallbackOwners(const MediaConfig& config) {
     std::array<std::atomic_int, 2> received{};
     std::atomic_int crossed{ 0 };
-    ruvia::EventLoopPool pool({ .loopCount = 2, .mailboxCapacity = 64 });
+    ruvia::EventLoopPool pool({ .loopCount = 2, .queue_capacity = 64 });
     sdkSupervisor().configure(config);
     sdkSupervisor().start();
     pool.start();

@@ -791,8 +791,8 @@ class VpnHubService final {
         const auto instance = service::runtime::instanceId();
         auto schedules = context.redis().getRepository<ReconciliationSchedule>();
         if (background) {
-            const ruvia::DbFindOptions options{
-                .where = ReconciliationSchedule::column<"id">() == instance};
+            const ruvia::redis_find_options options{
+                .where = ReconciliationSchedule::field<"id">() == instance};
             if (co_await schedules.exists(options)) {
                 co_return wireguard::RuntimeStatus{ .code = "reconciliation_current" };
             }

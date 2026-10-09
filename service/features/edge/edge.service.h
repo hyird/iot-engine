@@ -1,6 +1,7 @@
 #pragma once
 
 #include <filesystem>
+#include <ruvia/web/db/DbPredicate.h>
 #include <google/protobuf/util/json_util.h>
 #include <unordered_set>
 #include "service/features/edge/edge.config.h"

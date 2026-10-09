@@ -75,6 +75,7 @@ void assign(String& target, std::optional<std::string_view> value) {
 ruvia::DbConfig databaseConfig(const ruvia::Env& env) {
     ruvia::DbConfig config;
     config.driver = ruvia::DbDriver::kPostgreSql;
+    config.tls.mode = ruvia::client_tls_mode::disabled;
     assign(config.host, env.get("DB_HOST"));
     assign(config.username, env.get("DB_USERNAME"));
     assign(config.password, env.get("DB_PASSWORD"));
@@ -88,6 +89,7 @@ ruvia::DbConfig databaseConfig(const ruvia::Env& env) {
 
 ruvia::RedisConfig redisConfig(const ruvia::Env& env) {
     ruvia::RedisConfig config;
+    config.tls.mode = ruvia::client_tls_mode::disabled;
     assign(config.host, env.get("REDIS_HOST"));
     assign(config.password, env.get("REDIS_PASSWORD"));
     config.port = env.get<std::uint16_t>("REDIS_PORT").value_or(6379);
@@ -672,12 +674,12 @@ void configureServer(
             .address = std::string(app.env().get("HOST").value_or("0.0.0.0")),
             .http = app.env().get<std::uint16_t>("PORT").value_or(1102),
         })
-        .server(ruvia::ServerConfig{
-            .workerCount = budget.service,
-            .maxStreamBodyBytes = 129U * 1024U * 1024U,
+        .server(ruvia::server_config{
+            .worker_count = budget.service,
+            .max_stream_body_bytes = 129U * 1024U * 1024U,
             // Ruvia applies this limit to both incoming and outgoing frames.
             // EventEnvelope still rejects incoming business requests above 64 KiB.
-            .maxWebSocketMessageBytes = 16U * 1024U * 1024U,
+            .max_web_socket_message_bytes = 16U * 1024U * 1024U,
         })
         .run();
 }

@@ -15,7 +15,6 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  VCPKG_COMMIT: 4bca8fd8654e5ba76f92661db7bfe954768ad8ef
   BUILD_TYPE: Release
   BUN_VERSION: 1.3.14
   UPX_VERSION: 5.1.1
@@ -127,18 +126,21 @@ jobs:
     env:
       CC: clang-19
       CXX: clang++-19
-      VCPKG_ROOT: ${{ github.workspace }}/vcpkg
-      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/.cache/vcpkg/archives
     steps:
       - name: Checkout iot-engine
         uses: actions/checkout@v6
         with:
           persist-credentials: false
 
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.x'
+
       - name: Install toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang-19 clang-tools-19 g++-14 ninja-build nasm curl zip unzip tar xz-utils
+          sudo apt-get install -y clang-19 clang-tools-19 g++-14 ninja-build nasm curl zip unzip tar xz-utils perl bison flex pkg-config make
+          python -m pip install meson==1.12.1
           clang-19 --version
           clang++-19 --version
           clang-scan-deps-19 --version
@@ -154,32 +156,24 @@ jobs:
       - name: Install frontend dependencies
         run: bun install --frozen-lockfile
 
-      - name: Restore vcpkg binary cache
-        id: vcpkg-cache
-        uses: actions/cache/restore@v6
-        with:
-          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
-          key: vcpkg-binaries-${{ runner.os }}-${{ runner.arch }}-clang19-gcc14-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'ports/vcpkg/**', 'triplets/**', 'CMakeLists.txt') }}
-          restore-keys: |
-            vcpkg-binaries-${{ runner.os }}-${{ runner.arch }}-clang19-gcc14-${{ env.VCPKG_COMMIT }}-
-
-      - name: Bootstrap vcpkg
+      - name: Read compiler identity
+        id: compiler
         run: |
-          set -euo pipefail
-          mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE"
-          git init "$VCPKG_ROOT"
-          git -C "$VCPKG_ROOT" remote add origin https://github.com/microsoft/vcpkg.git
-          git -C "$VCPKG_ROOT" fetch --depth 1 origin "$VCPKG_COMMIT"
-          git -C "$VCPKG_ROOT" checkout --detach FETCH_HEAD
-          "$VCPKG_ROOT/bootstrap-vcpkg.sh" -disableMetrics
+          identity="$(clang++-19 --version; g++-14 --version)"
+          echo "version=$(printf '%s' "$identity" | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache FetchContent dependencies
+        uses: actions/cache@v6
+        with:
+          path: build/ci/_deps
+          key: fetchcontent-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler.outputs.version }}-${{ hashFiles('CMakeLists.txt', 'ports/cmake/**') }}
 
       - name: Configure
         id: configure
         run: |
           cmake -S . -B build/ci -G Ninja \
             -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
-            -DCMAKE_COMPILE_WARNING_AS_ERROR=ON \
-            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
+            -DCMAKE_COMPILE_WARNING_AS_ERROR=ON
 
       - name: Upload configure diagnostics
         if: ${{ !cancelled() && steps.configure.conclusion == 'failure' }}
@@ -190,15 +184,8 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-      - name: Save vcpkg binary cache
-        if: ${{ !cancelled() && steps.vcpkg-cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v6
-        with:
-          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
-          key: ${{ steps.vcpkg-cache.outputs.cache-primary-key }}
-
       - name: Build
-        run: cmake --build build/ci --config "$BUILD_TYPE"
+        run: cmake --build build/ci --config "$BUILD_TYPE" --parallel "$(nproc)"
 
       - name: Test
         # Hosted runners do not reliably deliver the IPv6 UDP loopback packet
@@ -242,11 +229,6 @@ jobs:
   windows_build:
     name: Windows MSVC build
     runs-on: windows-2025
-    env:
-      VCPKG_ROOT: ${{ github.workspace }}\vcpkg
-      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\.cache\vcpkg\archives
-      VCPKG_DEFAULT_TRIPLET: x64-windows-static
-      VCPKG_DEFAULT_HOST_TRIPLET: x64-windows-static
     steps:
       - name: Checkout iot-engine
         uses: actions/checkout@v6
@@ -261,6 +243,29 @@ jobs:
       - name: Install frontend dependencies
         run: bun install --frozen-lockfile
 
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.x'
+
+      - uses: msys2/setup-msys2@v2
+        id: msys2
+        with:
+          msystem: MSYS
+          update: true
+          install: make pkgconf patch diffutils
+
+      - name: Install native build tools
+        shell: pwsh
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: |
+          choco install strawberryperl winflexbison3 jom nasm --yes --no-progress
+          python -m pip install meson==1.12.1
+          "C:\Strawberry\perl\bin" >> $env:GITHUB_PATH
+          "$env:MSYS2_LOCATION\usr\bin" >> $env:GITHUB_PATH
+
+      - uses: ilammy/msvc-dev-cmd@v1
+
       - name: Read Windows runner image version
         id: windows-image
         shell: pwsh
@@ -273,34 +278,21 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($imageVersion) -or $imageVersion -notmatch '^[A-Za-z0-9._-]+$') {
               throw 'ImageVersion is empty or contains unsupported characters'
           }
-          "version=$imageOS-$imageVersion" >> $env:GITHUB_OUTPUT
+          $compilerVersion = (Get-Item (Get-Command cl).Source).VersionInfo.FileVersion.Replace(' ', '-')
+          "version=$imageOS-$imageVersion-$compilerVersion" >> $env:GITHUB_OUTPUT
 
-      - name: Restore vcpkg binary cache
-        id: vcpkg-cache
-        uses: actions/cache/restore@v6
+      - name: Cache FetchContent dependencies
+        uses: actions/cache@v6
         with:
-          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
-          key: vcpkg-binaries-${{ runner.os }}-${{ runner.arch }}-msvc-x64-windows-static-${{ steps.windows-image.outputs.version }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'ports/vcpkg/**', 'triplets/**', 'CMakeLists.txt') }}
-          restore-keys: |
-            vcpkg-binaries-${{ runner.os }}-${{ runner.arch }}-msvc-x64-windows-static-${{ steps.windows-image.outputs.version }}-${{ env.VCPKG_COMMIT }}-
-
-      - name: Bootstrap vcpkg
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
-          git init $env:VCPKG_ROOT
-          git -C $env:VCPKG_ROOT remote add origin https://github.com/microsoft/vcpkg.git
-          git -C $env:VCPKG_ROOT fetch --depth 1 origin $env:VCPKG_COMMIT
-          git -C $env:VCPKG_ROOT checkout --detach FETCH_HEAD
-          & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
+          path: build/ci/_deps
+          key: fetchcontent-${{ runner.os }}-${{ runner.arch }}-${{ steps.windows-image.outputs.version }}-${{ hashFiles('CMakeLists.txt', 'ports/cmake/**') }}
 
       - name: Configure
         id: configure
         shell: pwsh
         run: |
           cmake -S . -B build/ci `
-            -DCMAKE_COMPILE_WARNING_AS_ERROR=ON `
-            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake"
+            -DCMAKE_COMPILE_WARNING_AS_ERROR=ON
 
       - name: Upload configure diagnostics
         if: ${{ !cancelled() && steps.configure.conclusion == 'failure' }}
@@ -311,15 +303,8 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-      - name: Save vcpkg binary cache
-        if: ${{ success() && !cancelled() && steps.vcpkg-cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v6
-        with:
-          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
-          key: ${{ steps.vcpkg-cache.outputs.cache-primary-key }}
-
       - name: Build
-        run: cmake --build build/ci --config ${{ env.BUILD_TYPE }}
+        run: cmake --build build/ci --config ${{ env.BUILD_TYPE }} --parallel $env:NUMBER_OF_PROCESSORS
 
       - name: Test
         # Hosted runners do not reliably deliver the IPv6 UDP loopback packet

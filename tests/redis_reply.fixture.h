@@ -1,0 +1,146 @@
+#pragma once
+
+#include <asio.hpp>
+#include <chrono>
+#include <cstdint>
+#include <istream>
+#include <memory_resource>
+#include <span>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <thread>
+#include <utility>
+#include <vector>
+
+#include <ruvia/core/EventLoopPool.h>
+#include <ruvia/web/redis/RedisClient.h>
+
+namespace test {
+
+// Decode controlled RESP replies through the public client; the returned
+// value owns a copy in the caller's PMR instead of framework-private storage.
+class RedisReplyServer final {
+public:
+    explicit RedisReplyServer(std::string reply)
+        : acceptor_(io_, {asio::ip::address_v4::loopback(), 0}),
+          port_(acceptor_.local_endpoint().port()),
+          reply_(std::move(reply)), thread_([this] { serve(); }) {}
+
+    ~RedisReplyServer() {
+        asio::error_code error;
+        asio::ip::tcp::socket wake(io_);
+        wake.connect({asio::ip::address_v4::loopback(), port_}, error);
+        wake.close(error);
+        thread_.join();
+    }
+
+    std::uint16_t port() const noexcept { return port_; }
+
+private:
+    void serve() noexcept {
+        try {
+            asio::ip::tcp::socket socket(io_);
+            acceptor_.accept(socket);
+            asio::streambuf buffer;
+            std::istream input(&buffer);
+            const auto line = [&] {
+                asio::read_until(socket, buffer, "\r\n");
+                std::string value;
+                std::getline(input, value);
+                value.pop_back();
+                return value;
+            };
+            for (;;) {
+                const auto array = line();
+                if (array.empty() || array.front() != '*') return;
+                const auto count = std::stoul(array.substr(1));
+                std::string command;
+                for (std::size_t index = 0; index < count; ++index) {
+                    const auto bulk = line();
+                    const auto size = std::stoul(bulk.substr(1));
+                    if (buffer.size() < size + 2) {
+                        asio::read(socket, buffer, asio::transfer_exactly(size + 2 - buffer.size()));
+                    }
+                    std::string value(size, '\0');
+                    input.read(value.data(), static_cast<std::streamsize>(size));
+                    input.ignore(2);
+                    if (index == 0) command = std::move(value);
+                }
+                const std::string_view response = command == "PING"
+                    ? std::string_view{"+PONG\r\n"} : std::string_view{reply_};
+                asio::write(socket, asio::buffer(response));
+            }
+        } catch (...) {
+            // EOF ends the fixture. Other wire failures reach the client task.
+        }
+    }
+
+    asio::io_context io_;
+    asio::ip::tcp::acceptor acceptor_;
+    std::uint16_t port_;
+    std::string reply_;
+    std::thread thread_;
+};
+
+inline ruvia::Task<ruvia::RedisValue> readRedisReply(
+    ruvia::EventLoop loop, std::uint16_t port, std::pmr::memory_resource* resource) {
+    ruvia::RedisConfig config;
+    config.port = port;
+    config.tls.mode = ruvia::client_tls_mode::disabled;
+    config.poolSizePerWorker = 1;
+    config.connectTimeout = std::chrono::seconds(2);
+    config.commandTimeout = std::chrono::seconds(2);
+    ruvia::RedisClient client(loop, config);
+    co_await client.connect();
+    auto value = co_await client.command("FIXTURE");
+    ruvia::RedisValue owned(value, ruvia::RedisValue::allocator_type(resource));
+    co_await client.shutdown();
+    co_return owned;
+}
+
+inline ruvia::RedisValue redisReply(std::string encoded, std::pmr::memory_resource* resource) {
+    RedisReplyServer server(std::move(encoded));
+    ruvia::EventLoopPool pool({.loopCount = 1});
+    pool.start();
+    auto result = pool.loop(0).start(readRedisReply(pool.loop(0), server.port(), resource)).get();
+    pool.stop();
+    pool.join();
+    return result;
+}
+
+inline std::string encodeRedisReply(const ruvia::RedisValue& value) {
+    switch (value.kind()) {
+    case ruvia::RedisValue::Kind::kNull: return "$-1\r\n";
+    case ruvia::RedisValue::Kind::kString:
+        return "$" + std::to_string(value.string().size()) + "\r\n" + std::string(value.string()) + "\r\n";
+    case ruvia::RedisValue::Kind::kError: return "-" + std::string(value.error()) + "\r\n";
+    case ruvia::RedisValue::Kind::kInteger: return ":" + std::to_string(value.integer()) + "\r\n";
+    case ruvia::RedisValue::Kind::kArray: {
+        std::string encoded = "*" + std::to_string(value.array().size()) + "\r\n";
+        for (const auto& item : value.array()) encoded += encodeRedisReply(item);
+        return encoded;
+    }
+    }
+    throw std::logic_error("unknown Redis reply kind");
+}
+
+inline ruvia::RedisValue redisNull(std::pmr::memory_resource* resource) {
+    return redisReply("$-1\r\n", resource);
+}
+inline ruvia::RedisValue redisString(std::string_view value, std::pmr::memory_resource* resource) {
+    return redisReply("$" + std::to_string(value.size()) + "\r\n" + std::string(value) + "\r\n", resource);
+}
+inline ruvia::RedisValue redisError(std::string_view value, std::pmr::memory_resource* resource) {
+    return redisReply("-" + std::string(value) + "\r\n", resource);
+}
+inline ruvia::RedisValue redisInteger(std::int64_t value, std::pmr::memory_resource* resource) {
+    return redisReply(":" + std::to_string(value) + "\r\n", resource);
+}
+inline ruvia::RedisValue redisArray(std::pmr::vector<ruvia::RedisValue> values, std::pmr::memory_resource* resource) {
+    std::string encoded = "*" + std::to_string(values.size()) + "\r\n";
+    for (const auto& value : values) encoded += encodeRedisReply(value);
+    return redisReply(std::move(encoded), resource);
+}
+
+} // namespace test

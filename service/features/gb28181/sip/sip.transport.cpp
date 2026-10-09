@@ -692,7 +692,7 @@ void SipServer::stopInLoop() {
 
     std::error_code error;
     if (deadlineTimer_) {
-        deadlineTimer_->cancel(error);
+        deadlineTimer_->cancel();
         deadlineTimer_.reset();
     }
     deadlines_ = {};
@@ -2630,8 +2630,7 @@ void SipServer::armDeadlineTimer() {
         }
         deadlines_.pop();
     }
-    std::error_code ignored;
-    deadlineTimer_->cancel(ignored);
+    deadlineTimer_->cancel();
     if (deadlines_.empty()) {
         return;
     }

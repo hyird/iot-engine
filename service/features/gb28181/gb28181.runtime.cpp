@@ -750,8 +750,7 @@ ruvia::Task<void> CollectorRuntime::clearOwnerLeases() {
     leases.reserve(ownerLeases_.size());
     for (auto& [key, lease] : ownerLeases_) {
         if (lease.timer) {
-            std::error_code ignored;
-            lease.timer->cancel(ignored);
+            lease.timer->cancel();
         }
         leases.emplace_back(key, lease.token);
     }
@@ -855,8 +854,7 @@ ruvia::Task<bool> CollectorRuntime::retainOwner(
 
     if (current != ownerLeases_.end() && current->second.token != token) {
         if (current->second.timer) {
-            std::error_code ignored;
-            current->second.timer->cancel(ignored);
+            current->second.timer->cancel();
         }
         ownerLeases_.erase(current);
         current = ownerLeases_.end();
@@ -900,8 +898,7 @@ ruvia::Task<void> CollectorRuntime::releaseOwner(std::string key, std::string to
     if (const auto found = ownerLeases_.find(key);
         found != ownerLeases_.end() && found->second.token == token) {
         if (found->second.timer) {
-            std::error_code ignored;
-            found->second.timer->cancel(ignored);
+            found->second.timer->cancel();
         }
         ownerLeases_.erase(found);
     }

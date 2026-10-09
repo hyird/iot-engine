@@ -109,8 +109,8 @@ class OperationsService final {
         auto snapshots = context.redis().getRepository<WorkerSnapshotEntity>();
         std::vector<WorkerDiagnosticSnapshot> result(count);
         for (std::size_t index = 0; index < count; ++index) {
-            const ruvia::DbFindOptions options{
-                .where = WorkerSnapshotEntity::column<"id">() ==
+            const ruvia::redis_find_options options{
+                .where = WorkerSnapshotEntity::field<"id">() ==
                     service::message::worker_metrics::snapshotId(index, service::runtime::instanceId())};
             const auto snapshot = co_await snapshots.findOne(options);
             if (!snapshot) continue;

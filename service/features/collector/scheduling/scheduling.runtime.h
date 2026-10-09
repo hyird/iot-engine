@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <functional>
 #include <queue>
+#include <system_error>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -53,8 +54,11 @@ class DeadlineScheduler final {
             return;
         stopped_ = true;
         ++armGeneration_;
-        std::error_code ignored;
-        timer_.cancel(ignored);
+        try {
+            timer_.cancel();
+        } catch (const std::system_error&) {
+            // Shutdown is best effort; retain the non-throwing stop contract.
+        }
         while (!tasks_.empty())
             tasks_.pop();
         cancelled_.clear();
@@ -91,8 +95,7 @@ class DeadlineScheduler final {
         if (tasks_.empty()) {
             if (armed_) {
                 ++armGeneration_;
-                std::error_code ignored;
-                timer_.cancel(ignored);
+                timer_.cancel();
                 armed_ = false;
             }
             return;

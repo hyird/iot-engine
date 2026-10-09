@@ -159,7 +159,7 @@ int main() {
         reservation.close();
         std::promise<void> ready;
         auto started = ready.get_future();
-        app.blockingPool(nullptr).listen({ .address = "127.0.0.1", .http = port }).server({ .workerCount = 2 }).httpClient({ .alias = "gb-media", .config = { .scheme = ruvia::HttpScheme::kHttp, .host = "127.0.0.1", .port = origin.port(), .connectionCount = 2, .requestTimeout = std::nullopt, .maxResponseBytes = 2U * 1024U * 1024U, .protocol = ruvia::HttpClientProtocol::kHttp1Only } }).onStart([&] {
+        app.blockingPool(nullptr).listen({ .address = "127.0.0.1", .http = port }).server({ .worker_count = 2 }).httpClient({ .alias = "gb-media", .config = { .scheme = ruvia::HttpScheme::kHttp, .host = "127.0.0.1", .port = origin.port(), .connectionCount = 2, .requestTimeout = std::nullopt, .maxResponseBytes = 2U * 1024U * 1024U, .protocol = ruvia::HttpClientProtocol::kHttp1Only } }).onStart([&] {
             ready.set_value();
         });
         serving = std::thread([&] {

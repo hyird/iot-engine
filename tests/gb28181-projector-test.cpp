@@ -4,7 +4,7 @@
 #include <vector>
 #include <string_view>
 #include <asio.hpp>
-#include <ruvia/core/detail/io/AsioAwait.h>
+#include <ruvia/core/EventLoopPool.h>
 
 #include "service/features/gb28181/gb28181.service.h"
 #include "service/features/gb28181/gb28181.protocol.h"
@@ -34,14 +34,11 @@ struct ProjectionQueries : service::gb28181::GbProjectionService {
 };
 
 void completeProjection(ruvia::Task<void> task) {
-  asio::io_context context;
-  std::exception_ptr failure;
-  asio::co_spawn(context, [task = std::move(task), &failure]() mutable -> asio::awaitable<void> {
-    try { co_await ruvia::detail::taskAsAwaitable(std::move(task)); }
-    catch (...) { failure = std::current_exception(); }
-  }, asio::detached);
-  context.run();
-  if (failure) std::rethrow_exception(failure);
+  ruvia::EventLoopPool pool({.loopCount = 1});
+  pool.start();
+  pool.loop(0).start(std::move(task)).get();
+  pool.stop();
+  pool.join();
 }
 
 void testNonemptyProjectionQueries() {
